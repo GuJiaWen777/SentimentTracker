@@ -296,7 +296,7 @@ def render_markdown(brief: dict[str, Any]) -> str:
 
 def render_html(brief: dict[str, Any]) -> str:
     dashboard = "".join(_dashboard_card(*card) for card in brief["dashboard"])
-    tags = _tag_block("本期重点公司 / 机构", brief["companies"], "#EEF5FC", "#2B72B8") + _tag_block("本期重点药物 / 技术类型", brief["technologies"], "#EDF6E3", "#3B6D11")
+    tags = _combined_tag_block(brief["companies"], brief["technologies"])
     news = "".join(_news_item(item) for item in brief["items"])
     insights = "".join(_leaf_line("→ " + value, margin="0 0 6px") for value in brief["insights"])
     follow_up = "".join(_leaf_line("• " + value, margin="0 0 4px") for value in brief["follow_up"])
@@ -388,11 +388,26 @@ def _dashboard_card(label: str, value: str, color: str) -> str:
     return f'<section style="width:50%;box-sizing:border-box;padding:5px;"><section style="background:#F8F9FA;border:1px solid #E4E8ED;border-radius:6px;padding:12px 14px;"><p style="margin:0 0 5px;font-size:11px;line-height:1.5;color:#8A93A2;"><span leaf="">{escape(label)}</span></p><p style="margin:0;font-size:15px;line-height:1.5;color:{color};font-weight:700;"><span leaf="">{escape(value)}</span></p></section></section>'
 
 
-def _tag_block(label: str, tags: list[str], background: str, color: str) -> str:
-    if not tags:
+def _combined_tag_block(companies: list[str], technologies: list[str]) -> str:
+    groups = []
+    if companies:
+        groups.append(("本期重点公司 / 机构", companies, "#EEF5FC", "#2B72B8"))
+    if technologies:
+        groups.append(("本期重点药物 / 技术类型", technologies, "#EDF6E3", "#3B6D11"))
+    if not groups:
         return ""
-    chips = "".join(f'<span style="display:inline-block;margin:0 6px 6px 0;background:{background};color:{color};border-radius:4px;padding:3px 8px;font-size:12px;font-weight:700;"><span leaf="">{_html_text(tag)}</span></span>' for tag in tags)
-    return f'<section style="padding:0 18px 12px;"><section style="background:#F8F9FA;border:1px solid #E4E8ED;border-radius:6px;padding:12px 14px;"><p style="margin:0 0 8px;font-size:12px;line-height:1.5;color:#8A93A2;"><span leaf="">{_html_text(label)}</span></p><p style="margin:0;line-height:2;">{chips}</p></section></section>'
+    content = ""
+    for index, (label, tags, background, color) in enumerate(groups):
+        margin = "0" if index == len(groups) - 1 else "0 0 10px"
+        chips = "".join(
+            f'<span style="display:inline-block;margin:0 6px 6px 0;background:{background};color:{color};border-radius:4px;padding:3px 8px;font-size:12px;font-weight:700;"><span leaf="">{_html_text(tag)}</span></span>'
+            for tag in tags
+        )
+        content += (
+            f'<p style="margin:0 0 8px;font-size:12px;line-height:1.5;color:#8A93A2;"><span leaf="">{_html_text(label)}</span></p>'
+            f'<p style="margin:{margin};line-height:2;">{chips}</p>'
+        )
+    return f'<section style="padding:0 18px 18px;"><section style="background:#F8F9FA;border:1px solid #E4E8ED;border-radius:6px;padding:12px 14px;">{content}</section></section>'
 
 
 def _news_item(item: dict[str, Any]) -> str:

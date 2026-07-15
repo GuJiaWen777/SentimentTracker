@@ -40,6 +40,10 @@ def test_build_writes_compliant_earlydata_article(tmp_path):
     assert "辉瑞" in html
     assert "ADC" in html
     assert '<span leaf="">' in html
+    assert html.count("本期重点公司 / 机构") == 1
+    assert html.count("本期重点药物 / 技术类型") == 1
+    assert html.index("本期重点公司 / 机构") < html.index("本期重点药物 / 技术类型")
+    assert '<section style="padding:0 18px 18px;"><section style="background:#F8F9FA;border:1px solid #E4E8ED;border-radius:6px;padding:12px 14px;">' in html
     validate_html(html)
 
 
