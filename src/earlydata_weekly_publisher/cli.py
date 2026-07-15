@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .pipeline import (
+    DEFAULT_COVER,
+    build_brief,
+    fetch_redfox,
+    ingest_pb_xlsx,
+    load_dotenv,
+    parse_day,
+    publish_draft,
+    read_articles,
+    window_slug,
+    write_articles,
+    write_brief_outputs,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="EarlyData weekly WeChat publishing pipeline")
+    parser.add_argument("--env-root", default=".", help="Directory containing .env (default: current directory).")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    fetch = commands.add_parser("fetch", help="Fetch articles from RedFox API.")
+    _window_args(fetch)
+    fetch.add_argument("--account", action="append", default=[], help="WeChat account name; repeatable.")
+    fetch.add_argument("--no-content", action="store_true", help="Skip RedFox detail API calls.")
+    fetch.add_argument("--output", required=True, help="Output articles.json path.")
+
+    ingest = commands.add_parser("ingest-xlsx", help="Read P&B-format Excel into articles.json.")
+    _window_args(ingest)
+    ingest.add_argument("--xlsx", required=True, help="P&B Excel file.")
+    ingest.add_argument("--output", required=True, help="Output articles.json path.")
+
+    build = commands.add_parser("build", help="Generate brief.json, Markdown, and compliant HTML.")
+    _window_args(build)
+    build.add_argument("--input", required=True, help="Input articles.json.")
+    build.add_argument("--output-dir", default=None, help="Default: data/reports/YYYYMMDD_YYYYMMDD.")
+    build.add_argument("--title", default=None, help="Optional article title override.")
+
+    run = commands.add_parser("run", help="Acquire then build locally; never publishes.")
+    _window_args(run)
+    run.add_argument("--source", choices=("redfox", "xlsx"), required=True)
+    run.add_argument("--account", action="append", default=[])
+    run.add_argument("--xlsx", help="Required for --source xlsx.")
+    run.add_argument("--no-content", action="store_true")
+    run.add_argument("--output-dir", default=None)
+    run.add_argument("--title", default=None)
+
+    publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
+    publish.add_argument("--file", required=True, help="Validated wechat_article_img.html.")
+    publish.add_argument("--title", required=True)
+    publish.add_argument("--cover", default=DEFAULT_COVER)
+    publish.add_argument("--author", default=None)
+    publish.add_argument("--digest", default="")
+    publish.add_argument("--source-url", default="")
+    publish.add_argument("--confirm", action="store_true", help="Required acknowledgement before draft creation.")
+
+    args = parser.parse_args()
+    load_dotenv(Path(args.env_root))
+    if args.command == "fetch":
+        articles = fetch_redfox(parse_day(args.start), parse_day(args.end), args.account, include_content=not args.no_content)
+        write_articles(Path(args.output), articles)
+        print(f"Fetched {len(articles)} articles -> {args.output}")
+        return 0
+    if args.command == "ingest-xlsx":
+        articles = ingest_pb_xlsx(Path(args.xlsx), parse_day(args.start), parse_day(args.end))
+        write_articles(Path(args.output), articles)
+        print(f"Ingested {len(articles)} articles -> {args.output}")
+        return 0
+    if args.command == "build":
+        return _build(args)
+    if args.command == "run":
+        return _run(args)
+    if not args.confirm:
+        parser.error("publish requires --confirm; this writes to the WeChat draft box.")
+    author = args.author or __import__("os").environ.get("WECHAT_AUTHOR", "EARLY DATA")
+    media_id = publish_draft(Path(args.file), title=args.title, cover=args.cover, author=author, digest=args.digest, source_url=args.source_url)
+    print(json.dumps({"media_id": media_id, "status": "draft_created"}, ensure_ascii=False))
+    return 0
+
+
+def _window_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--start", required=True, help="YYYY-MM-DD")
+    command.add_argument("--end", required=True, help="YYYY-MM-DD")
+
+
+def _build(args: argparse.Namespace) -> int:
+    start, end = parse_day(args.start), parse_day(args.end)
+    output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
+    brief = build_brief(read_articles(Path(args.input)), start, end, args.title)
+    outputs = write_brief_outputs(brief, output_dir)
+    print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    start, end = parse_day(args.start), parse_day(args.end)
+    output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
+    raw_path = output_dir / "articles.json"
+    if args.source == "redfox":
+        articles = fetch_redfox(start, end, args.account, include_content=not args.no_content)
+    else:
+        if not args.xlsx:
+            raise ValueError("--xlsx is required when --source xlsx.")
+        articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
+    write_articles(raw_path, articles)
+    brief = build_brief(articles, start, end, args.title)
+    outputs = write_brief_outputs(brief, output_dir)
+    print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
+    return 0
