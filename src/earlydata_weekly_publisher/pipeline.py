@@ -118,12 +118,13 @@ def read_articles(path: Path) -> list[Article]:
     for raw in rows:
         if not isinstance(raw, dict) or not str(raw.get("title") or "").strip():
             continue
+        content = str(raw.get("content") or "")
         articles.append(
             Article(
-                title=str(raw.get("title") or "").strip(),
+                title=_repair_title_symbols(str(raw.get("title") or "").strip(), content),
                 source=str(raw.get("source") or raw.get("account") or "来源").strip(),
                 published_at=str(raw.get("published_at") or "")[:10],
-                content=str(raw.get("content") or ""),
+                content=content,
                 summary=str(raw.get("summary") or ""),
                 url=str(raw.get("url") or ""),
                 tags=_string_list(raw.get("tags")),
@@ -197,7 +198,7 @@ def ingest_pb_xlsx(path: Path, start: date, end: date) -> list[Article]:
         tags = [str(_cell(row, index)).strip() for index in (8, 9, 10, 11) if _cell(row, index)]
         articles.append(
             Article(
-                title=title or content[:30],
+                title=_repair_title_symbols(title or content[:30], content),
                 source=str(_cell(row, 5) or "来源").strip(),
                 published_at=published.isoformat(),
                 content=content,
@@ -257,7 +258,28 @@ def build_brief(articles: list[Article], start: date, end: date, title: str | No
         "insights": [_so_what(article) for article in selected[:3]],
         "follow_up": [article.title for article in selected[3:6]],
         "sources": list(dict.fromkeys(article.source for article in selected if article.source)),
+        "generation": {"mode": "rules"},
     }
+
+
+def generate_brief(
+    articles: list[Article],
+    start: date,
+    end: date,
+    title: str | None = None,
+    *,
+    generator: str = "llm",
+    llm_client: Any | None = None,
+    llm_backend: str | None = None,
+) -> dict[str, Any]:
+    mode = generator.strip().lower()
+    if mode == "rules":
+        return build_brief(articles, start, end, title)
+    if mode != "llm":
+        raise ValueError("generator must be 'llm' or 'rules'.")
+    from .semantic_generation import build_semantic_brief
+
+    return build_semantic_brief(articles, start, end, title, client=llm_client, backend=llm_backend)
 
 
 def write_brief_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Path]:
@@ -265,12 +287,19 @@ def write_brief_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Pa
     brief_path = output_dir / "brief.json"
     md_path = output_dir / "wechat_article.md"
     html_path = output_dir / "wechat_article_img.html"
-    brief_path.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+    public_brief = {key: value for key, value in brief.items() if not key.startswith("_")}
+    brief_path.write_text(json.dumps(public_brief, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(render_markdown(brief), encoding="utf-8")
     html = render_html(brief)
     validate_html(html)
     html_path.write_text(html, encoding="utf-8")
-    return {"brief": brief_path, "markdown": md_path, "html": html_path}
+    outputs = {"brief": brief_path, "markdown": md_path, "html": html_path}
+    ranking = brief.get("_ranking")
+    if isinstance(ranking, dict):
+        ranking_path = output_dir / "ranking.json"
+        ranking_path.write_text(json.dumps(ranking, ensure_ascii=False, indent=2), encoding="utf-8")
+        outputs["ranking"] = ranking_path
+    return outputs
 
 
 def render_markdown(brief: dict[str, Any]) -> str:
@@ -570,6 +599,24 @@ def _compact(text: str, limit: int) -> str:
         return text
     position = max(text.rfind(mark, 0, limit + 1) for mark in "。！？；")
     return text[: position + 1] if position >= limit // 2 else text[:limit].rstrip() + "…"
+
+
+def _repair_title_symbols(title: str, content: str) -> str:
+    if "?" not in title:
+        return title
+    repaired = title
+    for _index in range(title.count("?")):
+        position = repaired.find("?")
+        left = repaired[:position]
+        token_match = re.search(r"[\u4e00-\u9fffA-Za-z0-9]{2,16}$", left)
+        token = token_match.group(0) if token_match else ""
+        replacement = "？"
+        for symbol in ("®", "™"):
+            if any(token[-width:] + symbol in content for width in range(2, len(token) + 1)):
+                replacement = symbol
+                break
+        repaired = repaired[:position] + replacement + repaired[position + 1 :]
+    return repaired
 
 
 def _coerce_date(value: Any) -> date | None:

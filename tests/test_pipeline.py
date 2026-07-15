@@ -1,6 +1,6 @@
 from datetime import date
 
-from earlydata_weekly_publisher.pipeline import Article, build_brief, validate_html, write_articles, write_brief_outputs
+from earlydata_weekly_publisher.pipeline import Article, build_brief, read_articles, validate_html, write_articles, write_brief_outputs
 
 
 def test_build_writes_compliant_earlydata_article(tmp_path):
@@ -146,3 +146,15 @@ def test_html_normalizes_source_quotes_without_changing_json_content(tmp_path):
     html = write_brief_outputs(brief, tmp_path)["html"].read_text(encoding="utf-8")
 
     assert "“半角引号”" in html
+
+
+def test_read_articles_repairs_registered_mark_lost_in_title(tmp_path):
+    path = tmp_path / "articles.json"
+    path.write_text(
+        '{"articles":[{"title":"迪哲医药舒沃哲?双重磅","source":"来源","published_at":"2026-05-30","content":"舒沃哲®国际多中心III期研究"}]}',
+        encoding="utf-8",
+    )
+
+    articles = read_articles(path)
+
+    assert articles[0].title == "迪哲医药舒沃哲®双重磅"

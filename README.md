@@ -3,7 +3,7 @@
 独立、可复跑的公众号周报交付工具，只保留完整核心闭环：
 
 ```text
-RedFox API 或 P&B Excel -> 重点信号内容生成 -> EarlyData 合规 HTML -> 用户确认 -> 微信草稿箱
+RedFox API 或 P&B Excel -> LLM 全量语义排名 -> LLM 板块分析 -> EarlyData 合规 HTML -> 用户确认 -> 微信草稿箱
 ```
 
 项目说明：
@@ -21,7 +21,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-在 `.env` 中配置 `REDFOX_API_KEY`、`WECHAT_APP_ID` 和 `WECHAT_APP_SECRET`。不要提交该文件。
+在 `.env` 中配置数据源、LLM 和微信公众号凭据。不要提交该文件。默认 LLM 后端是 OpenAI-compatible API，需要 `LLM_API_KEY` 和 `LLM_API_MODEL`；也可使用已登录的 Claude 或 Codex CLI。
 
 ## 完整流程
 
@@ -42,6 +42,7 @@ earlydata-weekly run --source xlsx --start 2026-05-25 --end 2026-05-31 `
 产物写入 `data/reports/YYYYMMDD_YYYYMMDD/`：
 
 - `articles.json`：窗口内原始文章
+- `ranking.json`：全部新闻的 LLM 分数、分类和排名理由
 - `brief.json`：可审计的内容生成结果
 - `wechat_article.md`：源稿与发布元数据
 - `wechat_article_img.html`：EarlyData 信号简报主题的合规正文
@@ -65,14 +66,34 @@ earlydata-weekly publish `
 ```text
 fetch         RedFox API -> articles.json
 ingest-xlsx   P&B Excel -> articles.json
-build         articles.json -> brief.json / Markdown / 合规 HTML
+build         articles.json -> LLM 排名 / brief.json / Markdown / 合规 HTML
 run           fetch 或 ingest-xlsx 后自动 build（不发布）
 publish       已确认后上传 HTML 到草稿箱
 ```
 
-内容生成默认采用透明规则：互动指标排序、原文摘要截取、药物技术关键词和风险/机会判断。这样无需 LLM 即可稳定复跑；后续可在 `brief.json` 人工调整后重新渲染。
+`build` 和 `run` 默认使用 LLM。第一阶段对窗口内全部新闻逐条给出 0-100 分、分类和排名理由；第二阶段从去重后的高分候选中生成最终 6 条、关键信号、仪表盘、标签、摘要、业务影响、管理层洞察和后续追踪。任何模型配置或结构化输出错误都会让命令失败，不会暗中退回规则结果。
 
-生成时会优先保留产业事件，排除泛健康爆文、会议议程等非编辑信号，并按标题去重。发布前仍应人工核对 `brief.json` 与 `wechat_article_img.html` 的事实、公司标签和行动建议。
+仅在离线调试时显式使用规则备用模式：
+
+```powershell
+earlydata-weekly build --start 2026-05-25 --end 2026-05-31 `
+  --input data\reports\20260525_20260531\articles.json `
+  --generator rules
+```
+
+使用已登录的本地模型客户端：
+
+```powershell
+earlydata-weekly build --start 2026-05-25 --end 2026-05-31 `
+  --input data\reports\20260525_20260531\articles.json `
+  --llm-backend claude
+
+earlydata-weekly build --start 2026-05-25 --end 2026-05-31 `
+  --input data\reports\20260525_20260531\articles.json `
+  --llm-backend codex
+```
+
+发布前仍应人工核对 `ranking.json`、`brief.json` 与 `wechat_article_img.html` 的事实、公司标签和行动建议。
 
 ## 验证
 

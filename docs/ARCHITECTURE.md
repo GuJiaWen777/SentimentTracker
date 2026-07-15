@@ -12,27 +12,27 @@
 flowchart LR
   A[RedFox API] --> C[articles.json]
   B[P&B Excel] --> C
-  C --> D[规则化筛选与摘要]
-  D --> E[brief.json]
-  E --> F[Markdown]
-  E --> G[EarlyData HTML]
-  G --> H[HTML 合规校验]
-  H --> I{人工确认}
-  I -->|publish --confirm| J[微信草稿箱]
+  C --> D[LLM 全量分批排名]
+  D --> E[ranking.json]
+  E --> F[LLM 整期综合分析]
+  F --> G[brief.json]
+  G --> H[Markdown / EarlyData HTML]
+  H --> I[HTML 合规校验]
+  I --> J{人工确认}
+  J -->|publish --confirm| K[微信草稿箱]
 ```
 
 ## 模块职责
 
 `src/earlydata_weekly_publisher/cli.py` 是命令行入口，负责参数、日期窗口和发布门禁。
 
-`src/earlydata_weekly_publisher/pipeline.py` 承担完整业务链路：
+核心模块：
 
-- `fetch_redfox`：按账号、日期从 RedFox 列表和详情接口采集。
-- `ingest_pb_xlsx`：读取 P&B Excel 的标题、账号、日期、链接、互动指标和正文。
-- `build_brief`：产业相关性排序、重复标题去重、摘要、信号分类、公司和技术标签。
-- `render_html`：按 EarlyData Signal 视觉契约渲染 `wechat_article_img.html`。
-- `validate_html`：拒绝外链样式、脚本、`div`、定位布局和未包裹的中文文本。
-- `publish_draft`：上传封面与正文图片，并调用草稿箱接口。
+- `pipeline.py`：数据采集、Excel 归一化、规则备用模式、HTML 渲染、合规校验和微信公众号上传。
+- `llm_client.py`：OpenAI-compatible API、Claude CLI、Codex CLI 三种结构化 LLM 传输。
+- `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择和所有板块的语义生成。
+- `prompts.py`：CEO 受众的排名标尺、事实约束和整期分析提示词。
+- `cli.py`：参数、日期窗口、LLM 后端选择和发布门禁。
 
 HTML 视觉契约基于 `theme-earlydata-signal.html`：白色主背景、浅灰边框、4 个数据卡、关键信号、标签块、新闻条目与底部来源。渲染代码内置这一契约，因此运行项目不依赖本机 Codex skill 目录。
 
@@ -59,11 +59,13 @@ HTML 视觉契约基于 `theme-earlydata-signal.html`：白色主背景、浅灰
 }
 ```
 
-`brief.json` 是编辑审阅接口，包含日期窗口、来源文章总数、仪表盘、重点公司/机构、重点药物/技术类型、6 条以内重点信号、行动建议和来源。人工微调应优先在这里完成，再重新调用渲染函数或 `build`。
+`ranking.json` 保存窗口内每篇新闻的 LLM 分数、类别、排名理由和来源信息。重复标题也会被评分，只在进入最终综合候选池时去重。
+
+`brief.json` 是编辑审阅接口，包含模型与候选数量、日期窗口、仪表盘、重点公司/机构、重点药物/技术类型、6 条重点信号、行动建议和来源。
 
 ## 可演进点
 
-- 新数据源：归一化为 `Article` 后复用 `build_brief`。
-- 内容规则：在 `BIOPHARMA_TERMS`、`STRATEGIC_EVENT_TERMS`、`PHARMA_TYPES` 和测试样例中同步调整。
+- 新数据源：归一化为 `Article` 后复用 `generate_brief`。
+- 排名与写作口径：修改 `prompts.py`，并同步增加结构化输出测试。
 - 视觉主题：只修改 `render_html` 及相关 HTML 测试，保留 `validate_html` 的微信兼容约束。
-- LLM 辅助：可在 `brief.json` 之后增加受控编辑步骤，但必须保留来源链接和人工发布确认。
+- 新模型后端：实现 `complete_json` 协议并接入 `create_llm_client`，不得绕过 JSON 校验和人工发布确认。

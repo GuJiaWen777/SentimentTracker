@@ -6,8 +6,8 @@ from pathlib import Path
 
 from .pipeline import (
     DEFAULT_COVER,
-    build_brief,
     fetch_redfox,
+    generate_brief,
     ingest_pb_xlsx,
     load_dotenv,
     parse_day,
@@ -35,11 +35,12 @@ def main() -> int:
     ingest.add_argument("--xlsx", required=True, help="P&B Excel file.")
     ingest.add_argument("--output", required=True, help="Output articles.json path.")
 
-    build = commands.add_parser("build", help="Generate brief.json, Markdown, and compliant HTML.")
+    build = commands.add_parser("build", help="Generate LLM-ranked brief.json, Markdown, and compliant HTML.")
     _window_args(build)
     build.add_argument("--input", required=True, help="Input articles.json.")
     build.add_argument("--output-dir", default=None, help="Default: data/reports/YYYYMMDD_YYYYMMDD.")
     build.add_argument("--title", default=None, help="Optional article title override.")
+    _generator_args(build)
 
     run = commands.add_parser("run", help="Acquire then build locally; never publishes.")
     _window_args(run)
@@ -49,6 +50,7 @@ def main() -> int:
     run.add_argument("--no-content", action="store_true")
     run.add_argument("--output-dir", default=None)
     run.add_argument("--title", default=None)
+    _generator_args(run)
 
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
     publish.add_argument("--file", required=True, help="Validated wechat_article_img.html.")
@@ -88,10 +90,32 @@ def _window_args(command: argparse.ArgumentParser) -> None:
     command.add_argument("--end", required=True, help="YYYY-MM-DD")
 
 
+def _generator_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--generator",
+        choices=("llm", "rules"),
+        default="llm",
+        help="Content generator. Default: llm; rules is an explicit offline fallback.",
+    )
+    command.add_argument(
+        "--llm-backend",
+        choices=("api", "claude", "codex"),
+        default=None,
+        help="LLM transport. Default: LLM_BACKEND or api.",
+    )
+
+
 def _build(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
-    brief = build_brief(read_articles(Path(args.input)), start, end, args.title)
+    brief = generate_brief(
+        read_articles(Path(args.input)),
+        start,
+        end,
+        args.title,
+        generator=args.generator,
+        llm_backend=args.llm_backend,
+    )
     outputs = write_brief_outputs(brief, output_dir)
     print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
     return 0
@@ -108,7 +132,14 @@ def _run(args: argparse.Namespace) -> int:
             raise ValueError("--xlsx is required when --source xlsx.")
         articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
     write_articles(raw_path, articles)
-    brief = build_brief(articles, start, end, args.title)
+    brief = generate_brief(
+        articles,
+        start,
+        end,
+        args.title,
+        generator=args.generator,
+        llm_backend=args.llm_backend,
+    )
     outputs = write_brief_outputs(brief, output_dir)
     print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
     return 0
