@@ -19,6 +19,7 @@ def test_build_writes_compliant_earlydata_article(tmp_path):
             source="医药魔方",
             published_at="2026-05-29",
             content="ADC 与双抗管线进入全球共同开发阶段，交易结构强调利润共享。",
+            url="https://example.com/pfizer-indata",
             entities=["辉瑞", "信达生物"],
             read_count=1000,
             like_count=80,
@@ -48,6 +49,8 @@ def test_build_writes_compliant_earlydata_article(tmp_path):
     assert "本期重点药物 / 技术类型" in html
     assert "辉瑞" in html
     assert "ADC" in html
+    assert 'href="https://example.com/pfizer-indata"' in html
+    assert "查看来源" in html
     assert '<span leaf="">' in html
     assert html.count("本期重点公司 / 机构") == 1
     assert html.count("本期重点药物 / 技术类型") == 1

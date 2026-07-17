@@ -474,7 +474,11 @@ def _combined_tag_block(companies: list[str], technologies: list[str]) -> str:
 
 def _news_item(item: dict[str, Any]) -> str:
     source = f"{item['source']} · {item['date'][5:].replace('-', '月', 1)}日" if len(item["date"]) == 10 else item["source"]
-    return f'<section style="padding:14px 18px;border-top:1px solid #E4E8ED;"><p style="margin:0 0 8px;"><span style="display:inline-block;background:{item["background"]};color:{item["color"]};border-radius:4px;padding:3px 8px;font-size:12px;font-weight:700;"><span leaf="">{_html_text(item["signal"])}</span></span></p><h3 style="margin:0 0 6px;font-size:15px;line-height:1.6;color:#1C1F26;font-weight:700;"><span leaf="">{_html_text(item["title"])}</span></h3><p style="margin:0 0 6px;font-size:13px;line-height:1.8;color:#8A93A2;"><span leaf="">{_html_text(item["summary"])}</span></p><p style="margin:0 0 6px;font-size:13px;line-height:1.7;color:#0B65C2;font-weight:700;"><span leaf="">→ {_html_text(item["signal"])}：{_html_text(item["so_what"])}</span></p><p style="margin:0;font-size:11px;line-height:1.6;color:#8A93A2;text-align:right;"><span leaf="">{_html_text(source)}</span></p></section>'
+    url = str(item.get("url") or "").strip()
+    source_link = ""
+    if urlparse(url).scheme in {"http", "https"}:
+        source_link = f' · <a href="{escape(url, quote=True)}" style="color:#0B65C2;text-decoration:none;"><span leaf="">查看来源</span></a>'
+    return f'<section style="padding:14px 18px;border-top:1px solid #E4E8ED;"><p style="margin:0 0 8px;"><span style="display:inline-block;background:{item["background"]};color:{item["color"]};border-radius:4px;padding:3px 8px;font-size:12px;font-weight:700;"><span leaf="">{_html_text(item["signal"])}</span></span></p><h3 style="margin:0 0 6px;font-size:15px;line-height:1.6;color:#1C1F26;font-weight:700;"><span leaf="">{_html_text(item["title"])}</span></h3><p style="margin:0 0 6px;font-size:13px;line-height:1.8;color:#8A93A2;"><span leaf="">{_html_text(item["summary"])}</span></p><p style="margin:0 0 6px;font-size:13px;line-height:1.7;color:#0B65C2;font-weight:700;"><span leaf="">→ {_html_text(item["signal"])}：{_html_text(item["so_what"])}</span></p><p style="margin:0;font-size:11px;line-height:1.6;color:#8A93A2;text-align:right;"><span leaf="">{_html_text(source)}</span>{source_link}</p></section>'
 
 
 def _leaf_line(value: str, *, margin: str) -> str:

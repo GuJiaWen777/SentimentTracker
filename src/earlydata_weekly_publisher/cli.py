@@ -127,8 +127,10 @@ def _generator_args(command: argparse.ArgumentParser) -> None:
 def _build(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
+    articles = read_articles(Path(args.input))
+    write_articles(output_dir / "articles.json", articles)
     brief = generate_brief(
-        read_articles(Path(args.input)),
+        articles,
         start,
         end,
         args.title,

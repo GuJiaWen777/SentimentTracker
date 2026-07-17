@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .pipeline import read_brief, validate_brief_data, write_rendered_outputs
+from .quality import build_review_context
 
 
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -34,12 +35,14 @@ class ReviewWorkspace:
             raw_state = json.loads(self.state_path.read_text(encoding="utf-8"))
             if isinstance(raw_state, dict):
                 state = raw_state
+        context = build_review_context(self.report_dir, brief)
         return {
             "brief": brief,
             "locked_fields": _string_list(state.get("locked_fields")),
             "status": str(state.get("status") or "editing"),
             "updated_at": str(state.get("updated_at") or ""),
             "using_reviewed_brief": brief_path == self.reviewed_path,
+            **context,
         }
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -54,10 +57,12 @@ class ReviewWorkspace:
         _write_json_atomic(self.reviewed_path, brief)
         _write_json_atomic(self.state_path, state)
         outputs = write_rendered_outputs(brief, self.preview_dir)
+        context = build_review_context(self.report_dir, brief)
         return {
             "updated_at": updated_at,
             "locked_fields": locked_fields,
             "preview": str(outputs["html"]),
+            **context,
         }
 
     def preview_path(self) -> Path:
@@ -225,6 +230,20 @@ REVIEW_HTML = r"""<!doctype html>
     .list-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .notice { display: none; margin: 0 0 18px; border-left: 3px solid var(--red); background: #fff1f1; padding: 10px 12px; color: var(--red); font-size: 12px; }
     .notice.visible { display: block; }
+    .quality { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; border: 1px solid var(--line); background: #f8fafb; padding: 10px 12px; }
+    .quality strong { margin-right: 4px; font-size: 12px; }
+    .badge { display: inline-flex; align-items: center; min-height: 22px; border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 750; }
+    .badge.error { background: #fbe8e8; color: var(--red); }
+    .badge.warning { background: #fff2d8; color: var(--amber); }
+    .badge.clean { background: var(--green-soft); color: var(--green); }
+    .quality-list { width: 100%; margin: 4px 0 0; padding: 8px 0 0 18px; border-top: 1px solid var(--line); color: #566174; font-size: 12px; line-height: 1.7; }
+    .signal-issues { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .evidence { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+    .evidence summary { cursor: pointer; color: var(--blue); font-size: 12px; font-weight: 750; }
+    .evidence-body { margin-top: 9px; border-left: 2px solid #b9c1ca; padding-left: 12px; color: #566174; font-size: 12px; line-height: 1.7; }
+    .evidence-rank { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+    .evidence-body p { margin: 6px 0; }
+    .evidence-body a { color: var(--blue); font-weight: 700; }
     @media (max-width: 960px) {
       .workspace { grid-template-columns: 1fr; }
       .editor { border-right: 0; }
@@ -255,6 +274,7 @@ REVIEW_HTML = r"""<!doctype html>
       <section class="editor">
         <div class="editor-inner">
           <p class="notice" id="notice"></p>
+          <section class="quality" id="quality"></section>
           <section class="section" id="overview"></section>
           <section class="section" id="signals"></section>
           <section class="section" id="analysis"></section>
@@ -264,7 +284,7 @@ REVIEW_HTML = r"""<!doctype html>
     </main>
   </div>
   <script>
-    const state = { brief: null, locks: new Set(), dirty: false };
+    const state = { brief: null, locks: new Set(), dirty: false, evidence: {}, quality: { issues: [], error_count: 0, warning_count: 0 } };
     const byId = id => document.getElementById(id);
 
     function icon(name, size = 15) {
@@ -342,6 +362,36 @@ REVIEW_HTML = r"""<!doctype html>
       return head;
     }
 
+    function renderQuality() {
+      const root = byId('quality');
+      root.replaceChildren();
+      const title = document.createElement('strong');
+      title.textContent = '自动质检';
+      root.append(title);
+      if (!state.quality.issues.length) {
+        const clean = document.createElement('span');
+        clean.className = 'badge clean';
+        clean.textContent = '未发现异常';
+        root.append(clean);
+        return;
+      }
+      const error = document.createElement('span');
+      error.className = 'badge error';
+      error.textContent = `${state.quality.error_count} 项错误`;
+      const warning = document.createElement('span');
+      warning.className = 'badge warning';
+      warning.textContent = `${state.quality.warning_count} 项提醒`;
+      root.append(error, warning);
+      const list = document.createElement('ul');
+      list.className = 'quality-list';
+      state.quality.issues.slice(0, 8).forEach(issue => {
+        const row = document.createElement('li');
+        row.textContent = issue.message;
+        list.append(row);
+      });
+      root.append(list);
+    }
+
     function renderOverview() {
       const root = byId('overview');
       root.replaceChildren(sectionHead('整期判断', `${state.brief.source_count} 篇来源`));
@@ -377,9 +427,62 @@ REVIEW_HTML = r"""<!doctype html>
         const copy = document.createElement('div');
         copy.append(field('事实摘要', `items.${index}.summary`, { compact: true }), field('CEO 业务影响', `items.${index}.so_what`, { compact: true }));
         fields.append(copy);
-        signal.append(meta, fields);
+        signal.append(meta);
+        const issues = state.quality.issues.filter(issue => issue.article_id === item.article_id);
+        if (issues.length) {
+          const issueRow = document.createElement('div');
+          issueRow.className = 'signal-issues';
+          issues.forEach(issue => {
+            const badge = document.createElement('span');
+            badge.className = `badge ${issue.level}`;
+            badge.textContent = issue.message;
+            issueRow.append(badge);
+          });
+          signal.append(issueRow);
+        }
+        signal.append(fields, evidenceBlock(item));
         root.append(signal);
       });
+    }
+
+    function evidenceBlock(item) {
+      const evidence = state.evidence[item.article_id] || {};
+      const details = document.createElement('details');
+      details.className = 'evidence';
+      const summary = document.createElement('summary');
+      summary.textContent = '证据与排名';
+      const body = document.createElement('div');
+      body.className = 'evidence-body';
+      const rank = document.createElement('div');
+      rank.className = 'evidence-rank';
+      if (evidence.score !== null && evidence.score !== undefined) {
+        const score = document.createElement('span');
+        score.className = 'badge clean';
+        score.textContent = `${evidence.score} 分`;
+        rank.append(score);
+      }
+      if (evidence.ranking_category) {
+        const category = document.createElement('span');
+        category.className = 'badge warning';
+        category.textContent = evidence.ranking_category;
+        rank.append(category);
+      }
+      body.append(rank);
+      const reason = document.createElement('p');
+      reason.textContent = evidence.reason || '没有保存排名理由';
+      const excerpt = document.createElement('p');
+      excerpt.textContent = evidence.excerpt || '报告目录中没有 articles.json，无法显示原文摘录。';
+      body.append(reason, excerpt);
+      if (evidence.url) {
+        const link = document.createElement('a');
+        link.href = evidence.url;
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        link.textContent = '打开原文';
+        body.append(link);
+      }
+      details.append(summary, body);
+      return details;
     }
 
     function renderAnalysis() {
@@ -397,6 +500,7 @@ REVIEW_HTML = r"""<!doctype html>
 
     function render() {
       renderOverview();
+      renderQuality();
       renderSignals();
       renderAnalysis();
       if (window.lucide) window.lucide.createIcons();
@@ -409,6 +513,8 @@ REVIEW_HTML = r"""<!doctype html>
         const payload = await response.json();
         state.brief = payload.brief;
         state.locks = new Set(payload.locked_fields || []);
+        state.evidence = payload.evidence || {};
+        state.quality = payload.quality || { issues: [], error_count: 0, warning_count: 0 };
         state.dirty = false;
         byId('report-meta').textContent = `${state.brief.window_start} — ${state.brief.window_end} · ${state.brief.generation?.model || state.brief.generation?.mode || '已生成'}`;
         byId('save-status').textContent = payload.updated_at ? '已载入人工稿' : '模型原稿';
@@ -431,7 +537,10 @@ REVIEW_HTML = r"""<!doctype html>
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `保存失败 (${response.status})`);
         state.dirty = false;
+        state.evidence = payload.evidence || state.evidence;
+        state.quality = payload.quality || state.quality;
         byId('save-status').textContent = '已保存';
+        render();
         refreshPreview();
       } catch (error) {
         showError(error.message);
