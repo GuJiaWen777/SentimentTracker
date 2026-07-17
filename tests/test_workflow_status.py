@@ -3,7 +3,7 @@ from datetime import date
 from earlydata_weekly_publisher.approval import approve_report, load_approved_artifact, write_publication_receipt
 from earlydata_weekly_publisher.pipeline import Article, build_brief, write_articles, write_brief_outputs
 from earlydata_weekly_publisher.review_app import ReviewWorkspace
-from earlydata_weekly_publisher.workflow_status import inspect_workflow_status
+from earlydata_weekly_publisher.workflow_status import discover_report_dir, inspect_workflow_status
 
 
 START = date(2026, 5, 25)
@@ -59,3 +59,21 @@ def test_status_moves_from_review_to_approved_and_published(tmp_path):
     published = inspect_workflow_status(tmp_path, start=START, end=END)
     assert published["stage"] == "published"
     assert published["gates"]["published"] is True
+
+
+def test_discovery_prefers_most_advanced_directory_for_same_window(tmp_path):
+    standard = tmp_path / "20260525_20260531"
+    advanced = tmp_path / "20260525_20260531_llm"
+    article = _article()
+    write_articles(standard / "articles.json", [article])
+    write_brief_outputs(build_brief([article], START, END), standard)
+    write_articles(advanced / "articles.json", [article])
+    write_brief_outputs(build_brief([article], START, END), advanced)
+    workspace = ReviewWorkspace(advanced)
+    loaded = workspace.load()
+    workspace.save({"brief": loaded["brief"], "locked_fields": []})
+    approve_report(advanced)
+
+    selected = discover_report_dir(tmp_path, start=START, end=END)
+
+    assert selected == advanced

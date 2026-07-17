@@ -19,6 +19,34 @@ ARTIFACTS = {
     "review_state": "review_state.json",
     "publication_receipt": "publication_receipt.json",
 }
+STAGE_PRIORITY = {
+    "empty": 0,
+    "articles_ready": 1,
+    "ready_for_review": 2,
+    "review_in_progress": 3,
+    "approved": 4,
+    "published": 5,
+}
+
+
+def discover_report_dir(base_dir: Path, *, start: date, end: date) -> Path:
+    slug = f"{start:%Y%m%d}_{end:%Y%m%d}"
+    candidates = [path for path in base_dir.glob(slug + "*") if path.is_dir()]
+    if not candidates:
+        return base_dir / slug
+    ranked: list[tuple[int, int, int, float, Path]] = []
+    for path in candidates:
+        status = inspect_workflow_status(path, start=start, end=end)
+        ranked.append(
+            (
+                STAGE_PRIORITY[status["stage"]],
+                -len(status["issues"]),
+                int(path.name == slug),
+                path.stat().st_mtime,
+                path,
+            )
+        )
+    return max(ranked, key=lambda item: item[:-1])[-1]
 
 
 def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end: date | None = None) -> dict[str, Any]:

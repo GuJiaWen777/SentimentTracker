@@ -106,7 +106,7 @@ def main() -> int:
         serve_review_workbench(Path(args.report_dir), host=args.host, port=args.port, open_browser=not args.no_browser)
         return 0
     if args.command == "status":
-        from .workflow_status import inspect_workflow_status
+        from .workflow_status import discover_report_dir, inspect_workflow_status
 
         if bool(args.start) != bool(args.end):
             parser.error("status requires both --start and --end when either is supplied.")
@@ -114,7 +114,7 @@ def main() -> int:
         end = parse_day(args.end) if args.end else None
         if not args.report_dir and not (start and end):
             parser.error("status requires --report-dir or both --start and --end.")
-        report_dir = Path(args.report_dir) if args.report_dir else Path("data/reports") / window_slug(start, end)
+        report_dir = Path(args.report_dir) if args.report_dir else discover_report_dir(Path("data/reports"), start=start, end=end)
         print(json.dumps(inspect_workflow_status(report_dir, start=start, end=end), ensure_ascii=False, indent=2))
         return 0
     if not args.confirm:
