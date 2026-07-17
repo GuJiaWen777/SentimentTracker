@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .approval import approve_report
 from .pipeline import read_brief, validate_brief_data, write_rendered_outputs
 from .quality import build_review_context
 
@@ -70,6 +71,9 @@ class ReviewWorkspace:
         generated = self.report_dir / "wechat_article_img.html"
         return reviewed if reviewed.is_file() else generated
 
+    def approve(self) -> dict[str, Any]:
+        return approve_report(self.report_dir)
+
 
 def serve_review_workbench(
     report_dir: Path,
@@ -128,6 +132,15 @@ def _handler_for(workspace: ReviewWorkspace) -> type[BaseHTTPRequestHandler]:
                 if not isinstance(payload, dict):
                     raise ValueError("Review payload must be a JSON object.")
                 self._json(workspace.save(payload))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+        def do_POST(self) -> None:
+            if urlparse(self.path).path != "/api/approve":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self._json(workspace.approve())
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
@@ -197,6 +210,9 @@ REVIEW_HTML = r"""<!doctype html>
     .button:hover { border-color: #aab2bd; background: #f8fafb; }
     .button.primary { border-color: var(--green); background: var(--green); color: white; }
     .button.primary:hover { background: #205f34; }
+    .button.approve { border-color: var(--blue); color: var(--blue); }
+    .button.approve:hover { background: #edf5fc; }
+    .button.approved { border-color: var(--green); background: var(--green-soft); color: var(--green); }
     .button:disabled { cursor: wait; opacity: .55; }
     .workspace { min-height: 0; display: grid; grid-template-columns: minmax(520px, 58%) minmax(380px, 42%); }
     .editor { min-width: 0; overflow: auto; border-right: 1px solid var(--line); background: var(--paper); }
@@ -268,6 +284,7 @@ REVIEW_HTML = r"""<!doctype html>
         <span class="status" id="save-status">未保存</span>
         <button class="button" id="refresh-preview" type="button" title="刷新预览"><i data-lucide="refresh-cw" width="16" height="16"></i><span>刷新</span></button>
         <button class="button primary" id="save-review" type="button"><i data-lucide="save" width="16" height="16"></i><span>保存并预览</span></button>
+        <button class="button approve" id="approve-review" type="button"><i data-lucide="circle-check" width="16" height="16"></i><span>确认发布稿</span></button>
       </div>
     </header>
     <main class="workspace">
@@ -284,7 +301,7 @@ REVIEW_HTML = r"""<!doctype html>
     </main>
   </div>
   <script>
-    const state = { brief: null, locks: new Set(), dirty: false, evidence: {}, quality: { issues: [], error_count: 0, warning_count: 0 } };
+    const state = { brief: null, locks: new Set(), dirty: false, reviewStatus: 'editing', evidence: {}, quality: { issues: [], error_count: 0, warning_count: 0 } };
     const byId = id => document.getElementById(id);
 
     function icon(name, size = 15) {
@@ -297,7 +314,9 @@ REVIEW_HTML = r"""<!doctype html>
 
     function markDirty() {
       state.dirty = true;
+      state.reviewStatus = 'editing';
       byId('save-status').textContent = '有未保存修改';
+      updateApprovalButton();
     }
 
     function getAtPath(path) {
@@ -504,6 +523,16 @@ REVIEW_HTML = r"""<!doctype html>
       renderSignals();
       renderAnalysis();
       if (window.lucide) window.lucide.createIcons();
+      updateApprovalButton();
+    }
+
+    function updateApprovalButton() {
+      const button = byId('approve-review');
+      const approved = state.reviewStatus === 'approved' && !state.dirty;
+      button.classList.toggle('approved', approved);
+      button.disabled = state.dirty || approved || state.quality.error_count > 0;
+      const label = button.querySelector('span');
+      if (label) label.textContent = approved ? '已确认发布稿' : '确认发布稿';
     }
 
     async function loadReview() {
@@ -515,9 +544,10 @@ REVIEW_HTML = r"""<!doctype html>
         state.locks = new Set(payload.locked_fields || []);
         state.evidence = payload.evidence || {};
         state.quality = payload.quality || { issues: [], error_count: 0, warning_count: 0 };
+        state.reviewStatus = payload.status || 'editing';
         state.dirty = false;
         byId('report-meta').textContent = `${state.brief.window_start} — ${state.brief.window_end} · ${state.brief.generation?.model || state.brief.generation?.mode || '已生成'}`;
-        byId('save-status').textContent = payload.updated_at ? '已载入人工稿' : '模型原稿';
+        byId('save-status').textContent = payload.status === 'approved' ? '发布稿已确认' : (payload.updated_at ? '已载入人工稿' : '模型原稿');
         render();
       } catch (error) {
         showError(error.message);
@@ -537,6 +567,7 @@ REVIEW_HTML = r"""<!doctype html>
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `保存失败 (${response.status})`);
         state.dirty = false;
+        state.reviewStatus = 'editing';
         state.evidence = payload.evidence || state.evidence;
         state.quality = payload.quality || state.quality;
         byId('save-status').textContent = '已保存';
@@ -547,6 +578,24 @@ REVIEW_HTML = r"""<!doctype html>
         byId('save-status').textContent = '保存失败';
       } finally {
         button.disabled = false;
+      }
+    }
+
+    async function approveReview() {
+      const button = byId('approve-review');
+      button.disabled = true;
+      byId('save-status').textContent = '确认中';
+      try {
+        const response = await fetch('/api/approve', { method: 'POST' });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `确认失败 (${response.status})`);
+        state.reviewStatus = payload.status;
+        byId('save-status').textContent = '发布稿已确认';
+        updateApprovalButton();
+      } catch (error) {
+        showError(error.message);
+        byId('save-status').textContent = '确认失败';
+        updateApprovalButton();
       }
     }
 
@@ -561,6 +610,7 @@ REVIEW_HTML = r"""<!doctype html>
     }
 
     byId('save-review').addEventListener('click', saveReview);
+    byId('approve-review').addEventListener('click', approveReview);
     byId('refresh-preview').addEventListener('click', refreshPreview);
     window.addEventListener('beforeunload', event => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
     loadReview();

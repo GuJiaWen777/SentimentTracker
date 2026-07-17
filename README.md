@@ -53,13 +53,12 @@ earlydata-weekly run --source xlsx --start 2026-05-25 --end 2026-05-31 `
 
 ```powershell
 earlydata-weekly publish `
-  --file data\reports\20260525_20260531\wechat_article_img.html `
-  --title "AI CEO 生物医药舆情周报 2026.05.25-05.31" `
+  --report-dir data\reports\20260525_20260531 `
   --cover "https://www.earlydata.com/assets/early-data-logo.png" `
   --confirm
 ```
 
-`--confirm` 是草稿箱写入门禁。它只创建草稿，不会群发。若接口返回 IP 白名单错误，请在公众号后台加入运行本工具机器的公网 IP。
+先在审核工作台保存并点击“确认发布稿”。`publish --report-dir` 会校验人工稿和 HTML 哈希，成功后记录 `publication_receipt.json`；同一版本再次运行不会重复创建草稿。`--confirm` 仍是草稿箱写入门禁，它只创建草稿，不会群发。
 
 ## 命令拆分
 

@@ -62,13 +62,14 @@ earlydata-weekly review --report-dir data\reports\20260525_20260531
 
 ```powershell
 earlydata-weekly publish `
-  --file data\reports\20260525_20260531\wechat_article_img.html `
-  --title "AI CEO 生物医药舆情周报 2026.05.25-05.31" `
+  --report-dir data\reports\20260525_20260531 `
   --cover "https://www.earlydata.com/assets/early-data-logo.png" `
   --confirm
 ```
 
-执行前须已明确获得发布确认。命令成功后仅记录返回的 `media_id`；在公众号后台继续编辑、预览和群发。
+执行前须在审核工作台保存人工稿并点击“确认发布稿”。确认状态记录产物哈希，任何后续修改都会阻止发布，必须重新审核确认。命令成功后将 `media_id` 和产物哈希写入 `publication_receipt.json`；同一版本再次运行默认直接返回已有回执，不重复创建草稿。
+
+只有迁移旧流程时才使用 `publish --file ... --allow-unreviewed`；该路径仍要求 `--title` 和 `--confirm`，但不会生成审核回执。
 
 ## 常见故障
 

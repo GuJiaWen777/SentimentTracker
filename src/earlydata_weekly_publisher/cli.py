@@ -65,13 +65,17 @@ def main() -> int:
     review.add_argument("--no-browser", action="store_true")
 
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
-    publish.add_argument("--file", required=True, help="Validated wechat_article_img.html.")
-    publish.add_argument("--title", required=True)
+    publish_input = publish.add_mutually_exclusive_group(required=True)
+    publish_input.add_argument("--report-dir", help="Approved report directory from the review workbench.")
+    publish_input.add_argument("--file", help="Validated HTML path for explicit legacy publishing.")
+    publish.add_argument("--title", default=None, help="Defaults to the approved brief title with --report-dir.")
     publish.add_argument("--cover", default=DEFAULT_COVER)
     publish.add_argument("--author", default=None)
     publish.add_argument("--digest", default="")
     publish.add_argument("--source-url", default="")
     publish.add_argument("--confirm", action="store_true", help="Required acknowledgement before draft creation.")
+    publish.add_argument("--allow-unreviewed", action="store_true", help="Required with --file to bypass the review gate.")
+    publish.add_argument("--force-new-draft", action="store_true", help="Create another draft even when this approved version has a receipt.")
 
     args = parser.parse_args()
     load_dotenv(Path(args.env_root))
@@ -98,8 +102,28 @@ def main() -> int:
         return 0
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
+    artifact = None
+    if args.report_dir:
+        from .approval import load_approved_artifact, matching_publication_receipt, write_publication_receipt
+
+        artifact = load_approved_artifact(Path(args.report_dir))
+        receipt = matching_publication_receipt(artifact)
+        if receipt and not args.force_new_draft:
+            print(json.dumps({**receipt, "status": "draft_already_created"}, ensure_ascii=False))
+            return 0
+        html_path = artifact.html_path
+        title = args.title or artifact.title
+    else:
+        if not args.allow_unreviewed:
+            parser.error("publish --file requires --allow-unreviewed; prefer --report-dir for reviewed publishing.")
+        if not args.title:
+            parser.error("publish --file requires --title.")
+        html_path = Path(args.file)
+        title = args.title
     author = args.author or __import__("os").environ.get("WECHAT_AUTHOR", "EARLY DATA")
-    media_id = publish_draft(Path(args.file), title=args.title, cover=args.cover, author=author, digest=args.digest, source_url=args.source_url)
+    media_id = publish_draft(html_path, title=title, cover=args.cover, author=author, digest=args.digest, source_url=args.source_url)
+    if artifact is not None:
+        write_publication_receipt(artifact, media_id=media_id, title=title)
     print(json.dumps({"media_id": media_id, "status": "draft_created"}, ensure_ascii=False))
     return 0
 

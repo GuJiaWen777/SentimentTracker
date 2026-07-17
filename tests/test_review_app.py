@@ -36,3 +36,4 @@ def test_review_workbench_contains_editor_locking_and_preview():
     assert "locked_fields" in REVIEW_HTML
     assert "保存并预览" in REVIEW_HTML
     assert 'id="preview"' in REVIEW_HTML
+    assert "确认发布稿" in REVIEW_HTML
