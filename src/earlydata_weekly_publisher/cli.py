@@ -58,6 +58,12 @@ def main() -> int:
     render.add_argument("--input", required=True, help="Reviewed brief.json path.")
     render.add_argument("--output-dir", default=None, help="Default: directory containing brief.json.")
 
+    review = commands.add_parser("review", help="Open the local editorial review workbench.")
+    review.add_argument("--report-dir", required=True, help="Directory containing brief.json and generated HTML.")
+    review.add_argument("--host", default="127.0.0.1")
+    review.add_argument("--port", type=int, default=8765)
+    review.add_argument("--no-browser", action="store_true")
+
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
     publish.add_argument("--file", required=True, help="Validated wechat_article_img.html.")
     publish.add_argument("--title", required=True)
@@ -85,6 +91,11 @@ def main() -> int:
         return _run(args)
     if args.command == "render":
         return _render(args)
+    if args.command == "review":
+        from .review_app import serve_review_workbench
+
+        serve_review_workbench(Path(args.report_dir), host=args.host, port=args.port, open_browser=not args.no_browser)
+        return 0
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
     author = args.author or __import__("os").environ.get("WECHAT_AUTHOR", "EARLY DATA")

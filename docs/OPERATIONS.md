@@ -48,6 +48,14 @@ earlydata-weekly render --input data\reports\20260525_20260531\brief.json
 
 该命令不会调用数据源或 LLM。
 
+## 本地审核工作台
+
+```powershell
+earlydata-weekly review --report-dir data\reports\20260525_20260531
+```
+
+工作台默认监听 `127.0.0.1:8765`。编辑内容和字段锁定状态不会覆盖模型原稿；保存后生成 `brief.reviewed.json`、`review_state.json` 和 `reviewed/wechat_article_img.html`。
+
 ## 创建草稿
 
 以下命令会向配置的微信公众号账号创建一条草稿，但不会群发：

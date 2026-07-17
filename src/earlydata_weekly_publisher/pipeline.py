@@ -139,7 +139,10 @@ def read_articles(path: Path) -> list[Article]:
 
 
 def read_brief(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    return validate_brief_data(json.loads(path.read_text(encoding="utf-8")))
+
+
+def validate_brief_data(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("brief.json must contain a JSON object.")
     required = {

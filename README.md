@@ -79,6 +79,15 @@ earlydata-weekly render `
   --input data\reports\20260525_20260531\brief.json
 ```
 
+使用本地审核工作台编辑、锁定并预览人工稿：
+
+```powershell
+earlydata-weekly review `
+  --report-dir data\reports\20260525_20260531
+```
+
+模型原稿保留为 `brief.json`；人工稿保存为 `brief.reviewed.json`，字段锁定状态保存在 `review_state.json`，预览产物写入 `reviewed/`。
+
 `build` 和 `run` 默认使用 LLM。第一阶段对窗口内全部新闻逐条给出 0-100 分、分类和排名理由；第二阶段从去重后的高分候选中生成最终 6 条、关键信号、仪表盘、标签、摘要、业务影响、管理层洞察和后续追踪。任何模型配置或结构化输出错误都会让命令失败，不会暗中退回规则结果。
 
 仅在离线调试时显式使用规则备用模式：
