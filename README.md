@@ -12,6 +12,19 @@ RedFox API 或 P&B Excel -> LLM 全量语义排名 -> LLM 板块分析 -> EarlyD
 - [运行与发布手册](docs/OPERATIONS.md)
 - [内容质量规则](docs/CONTENT_RULES.md)
 
+## Agent 引导式交付
+
+项目内置 `.agents/skills/deliver-earlydata-weekly`。支持直接用自然语言启动或续跑，例如：
+
+```text
+帮我生成 2026-05-25 到 2026-05-31 的周报
+这期使用本地 P&B Excel
+继续上次的审核
+审核完成，发布到公众号草稿箱
+```
+
+Agent 会先运行 `status` 检查已有产物，再按当前状态引导选择来源、复用文章、执行 LLM 生成、打开审核工作台或请求发布确认。相同窗口已有数据时默认不会重新获取；已有模型稿或人工稿时不会擅自重新生成。
+
 ## 安装
 
 ```powershell

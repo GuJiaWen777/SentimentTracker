@@ -1,0 +1,4 @@
+interface:
+  display_name: "EarlyData 周报交付"
+  short_description: "通过引导对话选择来源、复用数据、审核并发布微信公众号草稿"
+  default_prompt: "Use $deliver-earlydata-weekly to guide me through generating, reviewing, and publishing an EarlyData weekly report."
