@@ -1,6 +1,15 @@
 from datetime import date
 
-from earlydata_weekly_publisher.pipeline import Article, build_brief, read_articles, validate_html, write_articles, write_brief_outputs
+from earlydata_weekly_publisher.pipeline import (
+    Article,
+    build_brief,
+    read_articles,
+    read_brief,
+    validate_html,
+    write_articles,
+    write_brief_outputs,
+    write_rendered_outputs,
+)
 
 
 def test_build_writes_compliant_earlydata_article(tmp_path):
@@ -158,3 +167,24 @@ def test_read_articles_repairs_registered_mark_lost_in_title(tmp_path):
     articles = read_articles(path)
 
     assert articles[0].title == "迪哲医药舒沃哲®双重磅"
+
+
+def test_reviewed_brief_can_be_rendered_without_generation(tmp_path):
+    article = Article(
+        title="FDA 更新 AI 药物审评要求",
+        source="来源",
+        published_at="2026-05-30",
+        content="监管机构要求补充模型验证材料。",
+    )
+    brief = build_brief([article], date(2026, 5, 25), date(2026, 5, 31))
+    report_dir = tmp_path / "report"
+    brief_path = write_brief_outputs(brief, report_dir)["brief"]
+    reviewed = read_brief(brief_path)
+    reviewed["key_signal"] = "人工确认后的本期关键信号。"
+
+    outputs = write_rendered_outputs(reviewed, report_dir / "reviewed")
+    html = outputs["html"].read_text(encoding="utf-8")
+
+    assert "人工确认后的本期关键信号" in html
+    assert outputs["markdown"].exists()
+    validate_html(html)

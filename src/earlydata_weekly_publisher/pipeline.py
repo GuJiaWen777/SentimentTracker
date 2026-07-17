@@ -138,6 +138,30 @@ def read_articles(path: Path) -> list[Article]:
     return articles
 
 
+def read_brief(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("brief.json must contain a JSON object.")
+    required = {
+        "title",
+        "window_start",
+        "window_end",
+        "source_count",
+        "key_signal",
+        "dashboard",
+        "companies",
+        "technologies",
+        "items",
+        "insights",
+        "follow_up",
+        "sources",
+    }
+    missing = sorted(required - set(data))
+    if missing:
+        raise ValueError("brief.json is missing required fields: " + ", ".join(missing))
+    return data
+
+
 def fetch_redfox(start: date, end: date, accounts: list[str], *, include_content: bool = True) -> list[Article]:
     api_key = os.environ.get("REDFOX_API_KEY", "").strip()
     if not api_key:
@@ -285,21 +309,27 @@ def generate_brief(
 def write_brief_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     brief_path = output_dir / "brief.json"
-    md_path = output_dir / "wechat_article.md"
-    html_path = output_dir / "wechat_article_img.html"
     public_brief = {key: value for key, value in brief.items() if not key.startswith("_")}
     brief_path.write_text(json.dumps(public_brief, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_markdown(brief), encoding="utf-8")
-    html = render_html(brief)
-    validate_html(html)
-    html_path.write_text(html, encoding="utf-8")
-    outputs = {"brief": brief_path, "markdown": md_path, "html": html_path}
+    outputs = {"brief": brief_path, **write_rendered_outputs(brief, output_dir)}
     ranking = brief.get("_ranking")
     if isinstance(ranking, dict):
         ranking_path = output_dir / "ranking.json"
         ranking_path.write_text(json.dumps(ranking, ensure_ascii=False, indent=2), encoding="utf-8")
         outputs["ranking"] = ranking_path
     return outputs
+
+
+def write_rendered_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    md_path = output_dir / "wechat_article.md"
+    html_path = output_dir / "wechat_article_img.html"
+    markdown = render_markdown(brief)
+    html = render_html(brief)
+    validate_html(html)
+    md_path.write_text(markdown, encoding="utf-8")
+    html_path.write_text(html, encoding="utf-8")
+    return {"markdown": md_path, "html": html_path}
 
 
 def render_markdown(brief: dict[str, Any]) -> str:

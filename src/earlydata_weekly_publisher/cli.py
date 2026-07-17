@@ -13,9 +13,11 @@ from .pipeline import (
     parse_day,
     publish_draft,
     read_articles,
+    read_brief,
     window_slug,
     write_articles,
     write_brief_outputs,
+    write_rendered_outputs,
 )
 
 
@@ -52,6 +54,10 @@ def main() -> int:
     run.add_argument("--title", default=None)
     _generator_args(run)
 
+    render = commands.add_parser("render", help="Render an edited brief.json without calling the LLM.")
+    render.add_argument("--input", required=True, help="Reviewed brief.json path.")
+    render.add_argument("--output-dir", default=None, help="Default: directory containing brief.json.")
+
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
     publish.add_argument("--file", required=True, help="Validated wechat_article_img.html.")
     publish.add_argument("--title", required=True)
@@ -77,6 +83,8 @@ def main() -> int:
         return _build(args)
     if args.command == "run":
         return _run(args)
+    if args.command == "render":
+        return _render(args)
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
     author = args.author or __import__("os").environ.get("WECHAT_AUTHOR", "EARLY DATA")
@@ -142,4 +150,12 @@ def _run(args: argparse.Namespace) -> int:
     )
     outputs = write_brief_outputs(brief, output_dir)
     print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
+    return 0
+
+
+def _render(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    output_dir = Path(args.output_dir) if args.output_dir else input_path.parent
+    outputs = write_rendered_outputs(read_brief(input_path), output_dir)
+    print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
     return 0

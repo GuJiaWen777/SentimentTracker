@@ -40,6 +40,14 @@ earlydata-weekly run --source redfox --start 2026-05-25 --end 2026-05-31 `
 
 `run` 已在输出前执行 HTML 合规校验，发布时会再次执行。校验失败时不要手工删除 `<span leaf="">`，应修正渲染代码或输入文本。
 
+人工修改 `brief.json` 后，只重新生成 Markdown 和 HTML：
+
+```powershell
+earlydata-weekly render --input data\reports\20260525_20260531\brief.json
+```
+
+该命令不会调用数据源或 LLM。
+
 ## 创建草稿
 
 以下命令会向配置的微信公众号账号创建一条草稿，但不会群发：

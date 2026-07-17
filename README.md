@@ -69,6 +69,14 @@ ingest-xlsx   P&B Excel -> articles.json
 build         articles.json -> LLM 排名 / brief.json / Markdown / 合规 HTML
 run           fetch 或 ingest-xlsx 后自动 build（不发布）
 publish       已确认后上传 HTML 到草稿箱
+render        人工修改 brief.json 后重新生成 Markdown / HTML（不调用 LLM）
+```
+
+人工修改 `brief.json` 后可以单独重新渲染，不会重新采集或消耗模型调用：
+
+```powershell
+earlydata-weekly render `
+  --input data\reports\20260525_20260531\brief.json
 ```
 
 `build` 和 `run` 默认使用 LLM。第一阶段对窗口内全部新闻逐条给出 0-100 分、分类和排名理由；第二阶段从去重后的高分候选中生成最终 6 条、关键信号、仪表盘、标签、摘要、业务影响、管理层洞察和后续追踪。任何模型配置或结构化输出错误都会让命令失败，不会暗中退回规则结果。
