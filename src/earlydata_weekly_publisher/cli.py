@@ -64,6 +64,11 @@ def main() -> int:
     review.add_argument("--port", type=int, default=8765)
     review.add_argument("--no-browser", action="store_true")
 
+    status = commands.add_parser("status", help="Inspect reusable artifacts and recommend the next workflow step.")
+    status.add_argument("--report-dir", default=None, help="Report directory; otherwise derived from --start/--end.")
+    status.add_argument("--start", default=None, help="YYYY-MM-DD")
+    status.add_argument("--end", default=None, help="YYYY-MM-DD")
+
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
     publish_input = publish.add_mutually_exclusive_group(required=True)
     publish_input.add_argument("--report-dir", help="Approved report directory from the review workbench.")
@@ -99,6 +104,18 @@ def main() -> int:
         from .review_app import serve_review_workbench
 
         serve_review_workbench(Path(args.report_dir), host=args.host, port=args.port, open_browser=not args.no_browser)
+        return 0
+    if args.command == "status":
+        from .workflow_status import inspect_workflow_status
+
+        if bool(args.start) != bool(args.end):
+            parser.error("status requires both --start and --end when either is supplied.")
+        start = parse_day(args.start) if args.start else None
+        end = parse_day(args.end) if args.end else None
+        if not args.report_dir and not (start and end):
+            parser.error("status requires --report-dir or both --start and --end.")
+        report_dir = Path(args.report_dir) if args.report_dir else Path("data/reports") / window_slug(start, end)
+        print(json.dumps(inspect_workflow_status(report_dir, start=start, end=end), ensure_ascii=False, indent=2))
         return 0
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")

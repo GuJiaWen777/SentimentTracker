@@ -69,7 +69,16 @@ build         articles.json -> LLM 排名 / brief.json / Markdown / 合规 HTML
 run           fetch 或 ingest-xlsx 后自动 build（不发布）
 publish       已确认后上传 HTML 到草稿箱
 render        人工修改 brief.json 后重新生成 Markdown / HTML（不调用 LLM）
+status        检查已有产物并给出下一步，供人工或 agent 续跑
 ```
+
+检查某个窗口是否已有可复用数据：
+
+```powershell
+earlydata-weekly status --start 2026-05-25 --end 2026-05-31
+```
+
+输出中的 `stage`、`next_action`、`reuse` 和 `gates` 用于判断是否跳过采集、生成或审核步骤。
 
 人工修改 `brief.json` 后可以单独重新渲染，不会重新采集或消耗模型调用：
 
