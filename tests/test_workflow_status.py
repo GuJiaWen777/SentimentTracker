@@ -61,6 +61,31 @@ def test_status_moves_from_review_to_approved_and_published(tmp_path):
     assert published["gates"]["published"] is True
 
 
+def test_status_ignores_articles_outside_requested_window(tmp_path):
+    outside = Article(title="旧闻", source="来源", published_at="2020-01-01", content="合作")
+    inside = _article()
+    write_articles(tmp_path / "articles.json", [outside, inside])
+
+    status = inspect_workflow_status(tmp_path, start=START, end=END)
+
+    assert status["stage"] == "articles_ready"
+    assert status["source_count"] == 2
+    assert status["in_window_count"] == 1
+    assert status["reuse"]["articles"] is True
+    assert any("fall outside the requested window" in issue for issue in status["issues"])
+
+
+def test_status_does_not_reuse_articles_when_none_match_window(tmp_path):
+    write_articles(tmp_path / "articles.json", [Article(title="旧闻", source="来源", published_at="2020-01-01", content="合作")])
+
+    status = inspect_workflow_status(tmp_path, start=START, end=END)
+
+    assert status["stage"] == "empty"
+    assert status["in_window_count"] == 0
+    assert status["reuse"]["articles"] is False
+    assert any("no articles inside the requested window" in issue for issue in status["issues"])
+
+
 def test_discovery_prefers_most_advanced_directory_for_same_window(tmp_path):
     standard = tmp_path / "20260525_20260531"
     advanced = tmp_path / "20260525_20260531_llm"

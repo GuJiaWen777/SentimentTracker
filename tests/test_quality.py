@@ -31,6 +31,31 @@ def test_quality_context_links_rankings_evidence_and_unsupported_numbers(tmp_pat
     assert any(issue["code"] == "unsupported_number" and "20亿美元" in issue["message"] for issue in context["quality"]["issues"])
 
 
+def test_quality_uses_persisted_article_ids_after_articles_are_reordered(tmp_path):
+    first = Article(title="第一篇", source="来源一", published_at="2026-05-30", content="第一篇的原文正文。", article_id="a0001")
+    second = Article(title="第二篇", source="来源二", published_at="2026-05-30", content="第二篇的原文正文。", article_id="a0002")
+    write_articles(tmp_path / "articles.json", [second, first])
+    brief = {
+        "items": [
+            {
+                "article_id": "a0002",
+                "title": "第二篇",
+                "source": "来源二",
+                "date": "2026-05-30",
+                "summary": "这段摘要用于确认证据仍然指向第二篇原文而不是其他文章。",
+                "so_what": "管理层应复核第二篇原文的事实与后续动作安排。",
+                "url": "https://example.com/second",
+            }
+        ]
+    }
+
+    context = build_review_context(tmp_path, brief)
+
+    evidence = context["evidence"]["a0002"]
+    assert evidence["source_available"] is True
+    assert "第二篇的原文正文" in evidence["excerpt"]
+
+
 def test_quality_context_warns_when_source_snapshot_is_missing(tmp_path):
     brief = {
         "items": [

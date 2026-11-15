@@ -104,7 +104,11 @@ def _ranking_by_id(path: Path) -> dict[str, dict[str, Any]]:
 def _article_by_id(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    return {f"a{index:04d}": article for index, article in enumerate(read_articles(path), start=1)}
+    result: dict[str, Any] = {}
+    for index, article in enumerate(read_articles(path), start=1):
+        article_id = str(getattr(article, "article_id", "") or "").strip() or f"a{index:04d}"
+        result.setdefault(article_id, article)
+    return result
 
 
 def _numbers(text: str) -> list[str]:

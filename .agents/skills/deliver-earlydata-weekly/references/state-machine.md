@@ -30,6 +30,7 @@ Handle status issues before moving forward:
 
 - **Window mismatch**: stop and ask whether to use the existing window or create the requested window.
 - **Invalid articles**: do not generate; reacquire or repair the input.
+- **Out-of-window articles**: `status` reports them in `issues` and `in_window_count`; `build`/`run` ignore them. If `in_window_count` is 0, reacquire or fix the source dates before generating.
 - **Invalid brief**: do not review or publish; repair or regenerate.
 - **Missing `articles.json` with a generated brief**: allow review of the existing draft, but explain that source evidence is unavailable. Offer to restore the matching source snapshot without rerunning the LLM.
 - **Approval hash mismatch**: reopen review and approve again. Never bypass with legacy file publishing.

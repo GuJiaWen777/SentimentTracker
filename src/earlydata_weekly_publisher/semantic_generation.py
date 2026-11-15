@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import date
+from pathlib import Path
 from typing import Any, Protocol
 
 from .llm_client import create_llm_client
-from .prompts import RANKING_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, ranking_prompt, synthesis_prompt
+from .prompts import (
+    RANKING_PROMPT_VERSION,
+    RANKING_SYSTEM_PROMPT,
+    SYNTHESIS_SYSTEM_PROMPT,
+    ranking_prompt,
+    synthesis_prompt,
+)
+from .ranking_cache import RankingCache
 
 
 RANKING_SCHEMA: dict[str, Any] = {
@@ -69,12 +78,28 @@ SYNTHESIS_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        "alternates": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "article_id": {"type": "string"},
+                    "signal": {"type": "string", "enum": ["监管", "政策", "竞争", "机会"]},
+                    "summary": {"type": "string"},
+                    "so_what": {"type": "string"},
+                },
+                "required": ["article_id", "signal", "summary", "so_what"],
+                "additionalProperties": False,
+            },
+        },
         "companies": {"type": "array", "maxItems": 5, "items": {"type": "string"}},
         "technologies": {"type": "array", "maxItems": 5, "items": {"type": "string"}},
         "insights": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "string"}},
         "follow_up": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "string"}},
     },
-    "required": ["key_signal", "dashboard", "selected", "companies", "technologies", "insights", "follow_up"],
+    "required": ["key_signal", "dashboard", "selected", "alternates", "companies", "technologies", "insights", "follow_up"],
     "additionalProperties": False,
 }
 
@@ -101,12 +126,21 @@ def build_semantic_brief(
     *,
     client: JsonLLM | None = None,
     backend: str | None = None,
+    ranking_cache_path: Path | None = None,
+    history_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not articles:
         raise ValueError("No articles available for the selected window.")
     llm = client or create_llm_client(backend)
-    article_map = {f"a{index:04d}": article for index, article in enumerate(articles, start=1)}
-    rankings = _rank_all(article_map, start, end, llm)
+    from .pipeline import ensure_article_ids
+
+    article_map = {article.article_id: article for article in ensure_article_ids(articles)}
+    cache = (
+        RankingCache.open(ranking_cache_path, model=llm.model_name, prompt_version=RANKING_PROMPT_VERSION)
+        if ranking_cache_path is not None
+        else None
+    )
+    rankings = _rank_all(article_map, start, end, llm, cache=cache)
     unique_rankings = _dedupe_rankings(rankings)
     candidate_count = min(_env_int("LLM_SYNTHESIS_CANDIDATES", 24, minimum=6, maximum=60), len(unique_rankings))
     candidates = unique_rankings[:candidate_count]
@@ -115,31 +149,25 @@ def build_semantic_brief(
     print(f"[llm] synthesizing {selection_count} signals from top {candidate_count} unique candidates", flush=True)
     synthesis = llm.complete_json(
         system_prompt=SYNTHESIS_SYSTEM_PROMPT,
-        prompt=synthesis_prompt(rows=synthesis_rows, start=start, end=end, selection_count=selection_count),
+        prompt=synthesis_prompt(
+            rows=synthesis_rows,
+            start=start,
+            end=end,
+            selection_count=selection_count,
+            history_context=history_context,
+        ),
         schema_name="earlydata_weekly_synthesis",
         schema=SYNTHESIS_SCHEMA,
     )
-    selected = _validated_selection(synthesis, article_map, {row["article_id"] for row in candidates}, selection_count)
+    candidate_ids = {row["article_id"] for row in candidates}
+    selected, alternates = _validated_selection(synthesis, article_map, candidate_ids, selection_count)
+    ranking_by_id = {row["article_id"]: row for row in rankings}
     dashboard = _dashboard(synthesis.get("dashboard"), selection_count)
-    items = []
-    for generated in selected:
-        article = article_map[generated["article_id"]]
-        signal = generated["signal"]
-        background, color = _signal_colors(signal)
-        items.append(
-            {
-                "article_id": generated["article_id"],
-                "title": article.title,
-                "source": article.source,
-                "date": article.published_at,
-                "summary": _required_text(generated, "summary"),
-                "signal": signal,
-                "background": background,
-                "color": color,
-                "so_what": _required_text(generated, "so_what"),
-                "url": article.url,
-            }
-        )
+    items = [_signal_item(article_map[entry["article_id"]], entry, ranking_by_id.get(entry["article_id"])) for entry in selected]
+    alternate_items = [
+        _signal_item(article_map[entry["article_id"]], entry, ranking_by_id.get(entry["article_id"]))
+        for entry in alternates
+    ]
     return {
         "title": title or f"AI CEO 生物医药舆情周报 {start:%Y.%m.%d}-{end:%m.%d}",
         "window_start": start.isoformat(),
@@ -150,6 +178,7 @@ def build_semantic_brief(
         "companies": _text_list(synthesis, "companies", maximum=5),
         "technologies": _text_list(synthesis, "technologies", maximum=5),
         "items": items,
+        "alternates": alternate_items,
         "insights": _text_list(synthesis, "insights", exact=3),
         "follow_up": _text_list(synthesis, "follow_up", exact=3),
         "sources": list(dict.fromkeys(item["source"] for item in items if item["source"])),
@@ -159,6 +188,9 @@ def build_semantic_brief(
             "ranked_article_count": len(rankings),
             "unique_article_count": len(unique_rankings),
             "candidate_count": candidate_count,
+            "cache_hits": cache.hits if cache else 0,
+            "cache_misses": cache.misses if cache else len(rankings),
+            "history_weeks": int((history_context or {}).get("window_count") or 0),
         },
         "_ranking": {
             "window_start": start.isoformat(),
@@ -170,13 +202,29 @@ def build_semantic_brief(
     }
 
 
-def _rank_all(article_map: dict[str, Any], start: date, end: date, client: JsonLLM) -> list[dict[str, Any]]:
+def _rank_all(
+    article_map: dict[str, Any],
+    start: date,
+    end: date,
+    client: JsonLLM,
+    *,
+    cache: RankingCache | None = None,
+) -> list[dict[str, Any]]:
     batch_size = _env_int("LLM_RANK_BATCH_SIZE", 40, minimum=5, maximum=100)
     pairs = list(article_map.items())
-    batch_count = (len(pairs) + batch_size - 1) // batch_size
     results: list[dict[str, Any]] = []
-    for batch_index, offset in enumerate(range(0, len(pairs), batch_size), start=1):
-        batch = pairs[offset : offset + batch_size]
+    pending: list[tuple[str, Any]] = []
+    for article_id, article in pairs:
+        cached = cache.get(article) if cache else None
+        if cached is not None:
+            results.append(_ranking_result(article_id, article, cached))
+        else:
+            pending.append((article_id, article))
+    if cache:
+        print(f"[llm] ranking cache: {cache.hits} hits, {cache.misses} misses", flush=True)
+    batch_count = (len(pending) + batch_size - 1) // batch_size
+    for batch_index, offset in enumerate(range(0, len(pending), batch_size), start=1):
+        batch = pending[offset : offset + batch_size]
         rows = [_ranking_row(article_id, article) for article_id, article in batch]
         print(f"[llm] ranking batch {batch_index}/{batch_count} ({len(batch)} articles)", flush=True)
         payload = client.complete_json(
@@ -205,19 +253,49 @@ def _rank_all(article_map: dict[str, Any], start: date, end: date, client: JsonL
             category = _required_text(item, "category")
             if category not in {"监管", "政策", "交易", "临床", "技术", "资本", "市场", "其他"}:
                 raise RuntimeError(f"LLM ranking category for {article_id} is invalid: {category!r}.")
-            results.append(
-                {
-                    "article_id": article_id,
-                    "score": score,
-                    "reason": _required_text(item, "reason"),
-                    "category": category,
-                    "title": article.title,
-                    "source": article.source,
-                    "published_at": article.published_at,
-                    "url": article.url,
-                }
-            )
+            reason = _required_text(item, "reason")
+            if cache:
+                cache.put(article, score=score, category=category, reason=reason)
+            results.append(_ranking_result(article_id, article, {"score": score, "category": category, "reason": reason}))
+    if cache and pending:
+        try:
+            cache.save()
+        except OSError as exc:
+            print(f"[cache] warning: could not save ranking cache: {exc}", file=sys.stderr, flush=True)
     return sorted(results, key=lambda row: (row["score"], article_map[row["article_id"]].score()), reverse=True)
+
+
+def _ranking_result(article_id: str, article: Any, values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "article_id": article_id,
+        "score": int(values["score"]),
+        "reason": str(values["reason"]),
+        "category": str(values["category"]),
+        "title": article.title,
+        "source": article.source,
+        "published_at": article.published_at,
+        "url": article.url,
+    }
+
+
+def _signal_item(article: Any, generated: dict[str, Any], ranking: dict[str, Any] | None) -> dict[str, Any]:
+    signal = str(generated["signal"])
+    background, color = _signal_colors(signal)
+    return {
+        "article_id": str(generated["article_id"]),
+        "title": article.title,
+        "source": article.source,
+        "date": article.published_at,
+        "summary": _required_text(generated, "summary"),
+        "signal": signal,
+        "background": background,
+        "color": color,
+        "so_what": _required_text(generated, "so_what"),
+        "url": article.url,
+        "score": int(ranking["score"]) if ranking and ranking.get("score") is not None else None,
+        "category": str(ranking.get("category") or "") if ranking else "",
+        "reason": str(ranking.get("reason") or "") if ranking else "",
+    }
 
 
 def _ranking_row(article_id: str, article: Any) -> dict[str, Any]:
@@ -257,18 +335,55 @@ def _validated_selection(
     article_map: dict[str, Any],
     candidate_ids: set[str],
     selection_count: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected = _validated_generated(
+        synthesis.get("selected"),
+        candidate_ids,
+        article_map,
+        "selected",
+        exact=selection_count,
+    )
+    alternates = _validated_generated(
+        synthesis.get("alternates"),
+        candidate_ids,
+        article_map,
+        "alternates",
+        maximum=6,
+    )
+    selected_ids = {str(item["article_id"]) for item in selected}
+    alternate_ids = {str(item["article_id"]) for item in alternates}
+    if selected_ids & alternate_ids:
+        raise RuntimeError("LLM synthesis alternates overlap with selected articles.")
+    return selected, alternates
+
+
+def _validated_generated(
+    value: Any,
+    candidate_ids: set[str],
+    article_map: dict[str, Any],
+    label: str,
+    *,
+    exact: int | None = None,
+    maximum: int | None = None,
 ) -> list[dict[str, Any]]:
-    selected = synthesis.get("selected")
-    if not isinstance(selected, list) or len(selected) != selection_count:
-        raise RuntimeError(f"LLM synthesis must select exactly {selection_count} articles.")
-    ids = [str(item.get("article_id") or "") for item in selected if isinstance(item, dict)]
-    if len(ids) != len(set(ids)) or any(article_id not in candidate_ids or article_id not in article_map for article_id in ids):
-        raise RuntimeError("LLM synthesis selected duplicate or unknown article IDs.")
+    if not isinstance(value, list):
+        raise RuntimeError(f"LLM synthesis field {label!r} must be an array.")
+    if exact is not None and len(value) != exact:
+        raise RuntimeError(f"LLM synthesis must select exactly {exact} articles.")
+    if maximum is not None and len(value) > maximum:
+        raise RuntimeError(f"LLM synthesis field {label!r} must contain at most {maximum} articles.")
     allowed_signals = {"监管", "政策", "竞争", "机会"}
-    for item in selected:
+    ids: list[str] = []
+    for item in value:
         if not isinstance(item, dict) or item.get("signal") not in allowed_signals:
             raise RuntimeError("LLM synthesis returned an invalid signal category.")
-    return selected
+        article_id = str(item.get("article_id") or "")
+        if article_id not in candidate_ids or article_id not in article_map:
+            raise RuntimeError(f"LLM synthesis field {label!r} contains unknown article IDs.")
+        ids.append(article_id)
+    if len(ids) != len(set(ids)):
+        raise RuntimeError(f"LLM synthesis field {label!r} contains duplicate article IDs.")
+    return value
 
 
 def _dashboard(value: Any, signal_count: int) -> list[list[str]]:

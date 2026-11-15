@@ -51,6 +51,18 @@ def test_approval_is_invalidated_when_html_changes(tmp_path):
         load_approved_artifact(tmp_path)
 
 
+def test_approval_records_signal_history_when_configured(tmp_path):
+    _workspace(tmp_path)
+    db_path = tmp_path / "history" / "signals.sqlite3"
+
+    state = approve_report(tmp_path, history_db=db_path)
+
+    assert state["status"] == "approved"
+    assert state["history"]["signal_count"] == 1
+    assert state["history"]["db"] == str(db_path)
+    assert db_path.is_file()
+
+
 def test_publication_receipt_prevents_duplicate_draft_for_same_html(tmp_path):
     _workspace(tmp_path)
     approve_report(tmp_path)

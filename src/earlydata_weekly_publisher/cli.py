@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 from .pipeline import (
     DEFAULT_COVER,
+    ensure_article_ids,
     fetch_redfox,
+    filter_articles_by_window,
     generate_brief,
     ingest_pb_xlsx,
     load_dotenv,
@@ -14,11 +18,14 @@ from .pipeline import (
     publish_draft,
     read_articles,
     read_brief,
+    validate_window,
     window_slug,
     write_articles,
     write_brief_outputs,
     write_rendered_outputs,
 )
+from .ranking_cache import DEFAULT_RANKING_CACHE
+from .signal_history import default_history_db, record_report, trend_summary
 
 
 def main() -> int:
@@ -43,6 +50,7 @@ def main() -> int:
     build.add_argument("--output-dir", default=None, help="Default: data/reports/YYYYMMDD_YYYYMMDD.")
     build.add_argument("--title", default=None, help="Optional article title override.")
     _generator_args(build)
+    _context_args(build)
 
     run = commands.add_parser("run", help="Acquire then build locally; never publishes.")
     _window_args(run)
@@ -53,6 +61,7 @@ def main() -> int:
     run.add_argument("--output-dir", default=None)
     run.add_argument("--title", default=None)
     _generator_args(run)
+    _context_args(run)
 
     render = commands.add_parser("render", help="Render an edited brief.json without calling the LLM.")
     render.add_argument("--input", required=True, help="Reviewed brief.json path.")
@@ -63,11 +72,24 @@ def main() -> int:
     review.add_argument("--host", default="127.0.0.1")
     review.add_argument("--port", type=int, default=8765)
     review.add_argument("--no-browser", action="store_true")
+    review.add_argument("--history-db", default=None, help="Signal history SQLite path for the trend panel.")
+    review.add_argument("--no-history", action="store_true")
 
     status = commands.add_parser("status", help="Inspect reusable artifacts and recommend the next workflow step.")
     status.add_argument("--report-dir", default=None, help="Report directory; otherwise derived from --start/--end.")
     status.add_argument("--start", default=None, help="YYYY-MM-DD")
     status.add_argument("--end", default=None, help="YYYY-MM-DD")
+
+    history = commands.add_parser("history", help="Record reports and inspect cross-week signal trends.")
+    history_commands = history.add_subparsers(dest="history_command", required=True)
+    history_record = history_commands.add_parser("record", help="Record one report's signals into the history database.")
+    history_record.add_argument("--report-dir", required=True)
+    history_record.add_argument("--history-db", default=None)
+    history_report = history_commands.add_parser("report", help="Show signal counts and entity streaks across recent reports.")
+    history_report.add_argument("--history-db", default=None)
+    history_report.add_argument("--end", default=None, help="Inclusive YYYY-MM-DD upper bound.")
+    history_report.add_argument("--weeks", type=int, default=8)
+    history_report.add_argument("--format", choices=("json", "text"), default="json")
 
     publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
     publish_input = publish.add_mutually_exclusive_group(required=True)
@@ -103,8 +125,17 @@ def main() -> int:
     if args.command == "review":
         from .review_app import serve_review_workbench
 
-        serve_review_workbench(Path(args.report_dir), host=args.host, port=args.port, open_browser=not args.no_browser)
+        history_db = None if args.no_history else (Path(args.history_db) if args.history_db else default_history_db())
+        serve_review_workbench(
+            Path(args.report_dir),
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+            history_db=history_db,
+        )
         return 0
+    if args.command == "history":
+        return _history(args)
     if args.command == "status":
         from .workflow_status import discover_report_dir, inspect_workflow_status
 
@@ -114,6 +145,8 @@ def main() -> int:
         end = parse_day(args.end) if args.end else None
         if not args.report_dir and not (start and end):
             parser.error("status requires --report-dir or both --start and --end.")
+        if start and end:
+            validate_window(start, end)
         report_dir = Path(args.report_dir) if args.report_dir else discover_report_dir(Path("data/reports"), start=start, end=end)
         print(json.dumps(inspect_workflow_status(report_dir, start=start, end=end), ensure_ascii=False, indent=2))
         return 0
@@ -137,7 +170,7 @@ def main() -> int:
             parser.error("publish --file requires --title.")
         html_path = Path(args.file)
         title = args.title
-    author = args.author or __import__("os").environ.get("WECHAT_AUTHOR", "EARLY DATA")
+    author = args.author or os.environ.get("WECHAT_AUTHOR", "EARLY DATA")
     media_id = publish_draft(html_path, title=title, cover=args.cover, author=author, digest=args.digest, source_url=args.source_url)
     if artifact is not None:
         write_publication_receipt(artifact, media_id=media_id, title=title)
@@ -165,10 +198,36 @@ def _generator_args(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _context_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--ranking-cache", default=None, help="Ranking cache path. Default: data/cache/ranking.json.")
+    command.add_argument("--no-ranking-cache", action="store_true", help="Disable ranking cache reads and writes.")
+    command.add_argument("--history-db", default=None, help="Signal history SQLite path. Default: data/history/signals.sqlite3.")
+    command.add_argument("--no-history", action="store_true", help="Do not read or write signal history.")
+
+
+def _cache_path(args: argparse.Namespace) -> Path | None:
+    if args.no_ranking_cache:
+        return None
+    return Path(args.ranking_cache or os.environ.get("EARLYDATA_RANKING_CACHE") or DEFAULT_RANKING_CACHE)
+
+
+def _history_path(args: argparse.Namespace) -> Path | None:
+    if args.no_history:
+        return None
+    return Path(args.history_db) if args.history_db else default_history_db()
+
+
 def _build(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
+    validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
-    articles = read_articles(Path(args.input))
+    articles = ensure_article_ids(read_articles(Path(args.input)))
+    in_window, excluded = filter_articles_by_window(articles, start, end)
+    if not in_window:
+        raise ValueError(f"No articles in {args.input} fall inside {start.isoformat()}..{end.isoformat()}.")
+    if excluded:
+        print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
+    # Keep the full source snapshot (now with stable IDs); generation filters it.
     write_articles(output_dir / "articles.json", articles)
     brief = generate_brief(
         articles,
@@ -177,6 +236,8 @@ def _build(args: argparse.Namespace) -> int:
         args.title,
         generator=args.generator,
         llm_backend=args.llm_backend,
+        ranking_cache_path=_cache_path(args),
+        history_db=_history_path(args),
     )
     outputs = write_brief_outputs(brief, output_dir)
     print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
@@ -185,6 +246,7 @@ def _build(args: argparse.Namespace) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
+    validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
     raw_path = output_dir / "articles.json"
     if args.source == "redfox":
@@ -193,6 +255,12 @@ def _run(args: argparse.Namespace) -> int:
         if not args.xlsx:
             raise ValueError("--xlsx is required when --source xlsx.")
         articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
+    articles = ensure_article_ids(articles)
+    articles, excluded = filter_articles_by_window(articles, start, end)
+    if not articles:
+        raise ValueError(f"No articles fall inside {start.isoformat()}..{end.isoformat()}.")
+    if excluded:
+        print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
     write_articles(raw_path, articles)
     brief = generate_brief(
         articles,
@@ -201,6 +269,8 @@ def _run(args: argparse.Namespace) -> int:
         args.title,
         generator=args.generator,
         llm_backend=args.llm_backend,
+        ranking_cache_path=_cache_path(args),
+        history_db=_history_path(args),
     )
     outputs = write_brief_outputs(brief, output_dir)
     print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
@@ -213,3 +283,32 @@ def _render(args: argparse.Namespace) -> int:
     outputs = write_rendered_outputs(read_brief(input_path), output_dir)
     print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
     return 0
+
+
+def _history(args: argparse.Namespace) -> int:
+    db_path = Path(args.history_db) if args.history_db else default_history_db()
+    if args.history_command == "record":
+        print(json.dumps(record_report(Path(args.report_dir), db_path=db_path), ensure_ascii=False, indent=2))
+        return 0
+    if args.weeks < 1:
+        raise ValueError("--weeks must be greater than zero.")
+    until = parse_day(args.end) if args.end else None
+    summary = trend_summary(db_path, until=until, weeks=args.weeks)
+    if args.format == "text":
+        print(_format_history(summary))
+    else:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _format_history(summary: dict) -> str:
+    if not summary.get("window_count"):
+        return "暂无历史记录。"
+    lines = [f"覆盖 {summary['window_count']} 期历史"]
+    for week in summary.get("weeks", []):
+        counts = " · ".join(f"{name} {count}" for name, count in (week.get("signal_counts") or {}).items()) or "无信号"
+        lines.append(f"{week['window_start']}..{week['window_end']}：{counts}")
+    persistent = summary.get("persistent_entities") or []
+    if persistent:
+        lines.append("连续出现：" + "、".join(f"{entry['name']}（{entry['streak']} 期）" for entry in persistent[:10]))
+    return "\n".join(lines)

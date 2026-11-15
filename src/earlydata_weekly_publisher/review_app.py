@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import secrets
 import threading
 import webbrowser
 from datetime import datetime, timezone
+from html import escape as html_escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from .approval import approve_report
 from .pipeline import read_brief, validate_brief_data, write_rendered_outputs
@@ -19,18 +22,20 @@ MAX_REQUEST_BYTES = 2 * 1024 * 1024
 
 
 class ReviewWorkspace:
-    def __init__(self, report_dir: Path) -> None:
+    def __init__(self, report_dir: Path, *, history_db: Path | None = None) -> None:
         self.report_dir = report_dir.resolve()
         self.source_path = self.report_dir / "brief.json"
         self.reviewed_path = self.report_dir / "brief.reviewed.json"
         self.state_path = self.report_dir / "review_state.json"
         self.preview_dir = self.report_dir / "reviewed"
+        self.history_db = Path(history_db) if history_db is not None else None
         if not self.source_path.is_file():
             raise FileNotFoundError(f"Missing report brief: {self.source_path}")
 
     def load(self) -> dict[str, Any]:
         brief_path = self.reviewed_path if self.reviewed_path.is_file() else self.source_path
         brief = read_brief(brief_path)
+        brief.setdefault("alternates", [])
         state: dict[str, Any] = {}
         if self.state_path.is_file():
             raw_state = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -43,11 +48,20 @@ class ReviewWorkspace:
             "status": str(state.get("status") or "editing"),
             "updated_at": str(state.get("updated_at") or ""),
             "using_reviewed_brief": brief_path == self.reviewed_path,
+            "trends": self._trends(brief),
             **context,
         }
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         brief = validate_brief_data(payload.get("brief"))
+        brief.setdefault("alternates", [])
+        brief["sources"] = list(
+            dict.fromkeys(
+                str(item.get("source") or "").strip()
+                for item in brief.get("items", [])
+                if str(item.get("source") or "").strip()
+            )
+        )
         locked_fields = _string_list(payload.get("locked_fields"))
         updated_at = datetime.now(timezone.utc).isoformat()
         state = {
@@ -63,6 +77,7 @@ class ReviewWorkspace:
             "updated_at": updated_at,
             "locked_fields": locked_fields,
             "preview": str(outputs["html"]),
+            "trends": self._trends(brief),
             **context,
         }
 
@@ -72,7 +87,17 @@ class ReviewWorkspace:
         return reviewed if reviewed.is_file() else generated
 
     def approve(self) -> dict[str, Any]:
-        return approve_report(self.report_dir)
+        return approve_report(self.report_dir, history_db=self.history_db)
+
+    def _trends(self, brief: dict[str, Any]) -> dict[str, Any]:
+        if self.history_db is None:
+            return {}
+        from .signal_history import trend_context_for_report
+
+        try:
+            return trend_context_for_report(self.history_db, brief)
+        except Exception as exc:  # A trend panel must never block editorial review.
+            return {"error": f"{type(exc).__name__}: {exc}", "window_count": 0}
 
 
 def serve_review_workbench(
@@ -81,10 +106,10 @@ def serve_review_workbench(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    token: str | None = None,
+    history_db: Path | None = None,
 ) -> None:
-    workspace = ReviewWorkspace(report_dir)
-    handler = _handler_for(workspace)
-    server = ThreadingHTTPServer((host, port), handler)
+    server, _review_token = create_review_server(report_dir, host=host, port=port, token=token, history_db=history_db)
     actual_port = server.server_address[1]
     url = f"http://{host}:{actual_port}/"
     print(f"Review workbench: {url}", flush=True)
@@ -98,20 +123,49 @@ def serve_review_workbench(
         server.server_close()
 
 
-def _handler_for(workspace: ReviewWorkspace) -> type[BaseHTTPRequestHandler]:
+def create_review_server(
+    report_dir: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    token: str | None = None,
+    history_db: Path | None = None,
+) -> tuple[ThreadingHTTPServer, str]:
+    workspace = ReviewWorkspace(report_dir, history_db=history_db)
+    review_token = token or secrets.token_urlsafe(32)
+    handler = _handler_for(workspace, token=review_token, bind_host=host)
+    server = ThreadingHTTPServer((host, port), handler)
+    return server, review_token
+
+
+def _handler_for(workspace: ReviewWorkspace, *, token: str, bind_host: str) -> type[BaseHTTPRequestHandler]:
+    loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+    # A wildcard bind cannot know its hostnames, so any literal IP is accepted,
+    # but DNS names are still rejected to block DNS-rebinding attacks.
+    allowed_hosts = None if bind_host in {"0.0.0.0", "::"} else loopback_hosts | {bind_host.lower()}
+    rendered_page = REVIEW_HTML.replace("__REVIEW_TOKEN__", html_escape(token, quote=True))
+
     class ReviewHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path == "/":
-                self._send(REVIEW_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                if not self._guard(require_token=False):
+                    return
+                self._send(rendered_page.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if path == "/api/review":
+                if not self._guard():
+                    return
                 self._json(workspace.load())
                 return
             if path == "/api/health":
+                if not self._guard(require_token=False):
+                    return
                 self._json({"status": "ok"})
                 return
             if path == "/preview":
+                if not self._guard(require_token=False):
+                    return
                 preview = workspace.preview_path()
                 if not preview.is_file():
                     self.send_error(HTTPStatus.NOT_FOUND, "Preview has not been generated.")
@@ -123,6 +177,11 @@ def _handler_for(workspace: ReviewWorkspace) -> type[BaseHTTPRequestHandler]:
         def do_PUT(self) -> None:
             if urlparse(self.path).path != "/api/review":
                 self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not self._guard():
+                return
+            if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                self._json({"error": "Content-Type must be application/json."}, status=HTTPStatus.BAD_REQUEST)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -139,10 +198,34 @@ def _handler_for(workspace: ReviewWorkspace) -> type[BaseHTTPRequestHandler]:
             if urlparse(self.path).path != "/api/approve":
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
+            if not self._guard():
+                return
             try:
                 self._json(workspace.approve())
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+        def _guard(self, *, require_token: bool = True) -> bool:
+            if not self._host_allowed():
+                self.send_error(HTTPStatus.FORBIDDEN, "Forbidden host.")
+                return False
+            if require_token:
+                provided = self.headers.get("X-Review-Token", "")
+                if not provided or not secrets.compare_digest(provided, token):
+                    self.send_error(HTTPStatus.FORBIDDEN, "Missing or invalid review token.")
+                    return False
+            return True
+
+        def _host_allowed(self) -> bool:
+            host = (self.headers.get("Host") or "").strip()
+            hostname = (urlsplit(f"//{host}").hostname or "").lower()
+            if hostname == "localhost":
+                return True
+            try:
+                ipaddress.ip_address(hostname)
+            except ValueError:
+                return False
+            return allowed_hosts is None or hostname in allowed_hosts
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -179,6 +262,7 @@ REVIEW_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="review-token" content="__REVIEW_TOKEN__">
   <title>EarlyData 周报审核</title>
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <style>
@@ -254,6 +338,17 @@ REVIEW_HTML = r"""<!doctype html>
     .badge.clean { background: var(--green-soft); color: var(--green); }
     .quality-list { width: 100%; margin: 4px 0 0; padding: 8px 0 0 18px; border-top: 1px solid var(--line); color: #566174; font-size: 12px; line-height: 1.7; }
     .signal-issues { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .trend-row { display: grid; grid-template-columns: 116px 1fr; gap: 10px; padding: 4px 0; color: #566174; font-size: 12px; line-height: 1.6; }
+    .trend-week { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { display: inline-flex; align-items: center; border-radius: 4px; background: #eef2f6; padding: 2px 7px; color: #3c4a5c; font-size: 11px; font-weight: 750; }
+    .candidate { margin-top: 10px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; padding: 12px 14px; }
+    .candidate-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .candidate-title { min-width: 0; font-size: 14px; font-weight: 750; line-height: 1.45; }
+    .candidate-meta { margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .candidate-summary { margin: 7px 0 10px; color: #566174; font-size: 12px; line-height: 1.65; }
+    .candidate-actions { display: flex; align-items: center; gap: 8px; }
+    .candidate-actions select { flex: 1; min-width: 0; }
     .evidence { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
     .evidence summary { cursor: pointer; color: var(--blue); font-size: 12px; font-weight: 750; }
     .evidence-body { margin-top: 9px; border-left: 2px solid #b9c1ca; padding-left: 12px; color: #566174; font-size: 12px; line-height: 1.7; }
@@ -293,7 +388,9 @@ REVIEW_HTML = r"""<!doctype html>
           <p class="notice" id="notice"></p>
           <section class="quality" id="quality"></section>
           <section class="section" id="overview"></section>
+          <section class="section" id="trends"></section>
           <section class="section" id="signals"></section>
+          <section class="section" id="candidates"></section>
           <section class="section" id="analysis"></section>
         </div>
       </section>
@@ -301,7 +398,9 @@ REVIEW_HTML = r"""<!doctype html>
     </main>
   </div>
   <script>
-    const state = { brief: null, locks: new Set(), dirty: false, reviewStatus: 'editing', evidence: {}, quality: { issues: [], error_count: 0, warning_count: 0 } };
+    const REVIEW_TOKEN = (document.querySelector('meta[name="review-token"]') || {}).content || '';
+    const authHeaders = { 'X-Review-Token': REVIEW_TOKEN };
+    const state = { brief: null, locks: new Set(), dirty: false, reviewStatus: 'editing', evidence: {}, trends: {}, quality: { issues: [], error_count: 0, warning_count: 0 } };
     const byId = id => document.getElementById(id);
 
     function icon(name, size = 15) {
@@ -517,10 +616,125 @@ REVIEW_HTML = r"""<!doctype html>
       root.append(grid);
     }
 
+    function renderTrends() {
+      const root = byId('trends');
+      const trends = state.trends || {};
+      if (!trends.window_count) {
+        root.replaceChildren();
+        return;
+      }
+      root.replaceChildren(sectionHead('跨周趋势', `${trends.window_count} 期历史`));
+      const rows = document.createElement('div');
+      (trends.weeks || []).slice(-6).forEach(week => {
+        const row = document.createElement('div');
+        row.className = 'trend-row';
+        const label = document.createElement('span');
+        label.className = 'trend-week';
+        label.textContent = `${String(week.window_start).slice(5)}~${String(week.window_end).slice(5)}`;
+        const detail = document.createElement('span');
+        const counts = Object.entries(week.signal_counts || {}).map(([name, count]) => `${name} ${count}`).join(' · ');
+        detail.textContent = counts || '无信号';
+        row.append(label, detail);
+        rows.append(row);
+      });
+      root.append(rows);
+      const continuing = trends.continuing_entities || [];
+      const persistent = continuing.length ? continuing : (trends.persistent_entities || []);
+      if (persistent.length) {
+        const meta = document.createElement('p');
+        meta.className = 'meta';
+        meta.textContent = continuing.length ? '本期延续（连续出现）' : '连续出现';
+        const chips = document.createElement('div');
+        chips.className = 'chips';
+        persistent.slice(0, 12).forEach(entry => {
+          const chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.textContent = `${entry.name} · ${entry.streak} 期`;
+          chips.append(chip);
+        });
+        root.append(meta, chips);
+      }
+      const newEntities = trends.new_entities || [];
+      if (newEntities.length) {
+        const meta = document.createElement('p');
+        meta.className = 'meta';
+        meta.textContent = '本期新增（相对上期）';
+        const chips = document.createElement('div');
+        chips.className = 'chips';
+        newEntities.slice(0, 12).forEach(entry => {
+          const chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.textContent = entry.name;
+          chips.append(chip);
+        });
+        root.append(meta, chips);
+      }
+    }
+
+    function renderCandidates() {
+      const root = byId('candidates');
+      const alternates = state.brief.alternates || [];
+      if (!alternates.length) {
+        root.replaceChildren();
+        return;
+      }
+      root.replaceChildren(sectionHead('候选池', `${alternates.length} 条备选`));
+      alternates.forEach(candidate => {
+        const card = document.createElement('div');
+        card.className = 'candidate';
+        const head = document.createElement('div');
+        head.className = 'candidate-head';
+        const title = document.createElement('span');
+        title.className = 'candidate-title';
+        title.textContent = candidate.title;
+        const score = document.createElement('span');
+        score.className = 'badge clean';
+        score.textContent = candidate.score === null || candidate.score === undefined ? '规则排序' : `${candidate.score} 分`;
+        head.append(title, score);
+        const meta = document.createElement('div');
+        meta.className = 'candidate-meta';
+        meta.textContent = `${candidate.signal} · ${candidate.source} · ${candidate.date}`;
+        const summary = document.createElement('p');
+        summary.className = 'candidate-summary';
+        summary.textContent = candidate.summary || '';
+        const actions = document.createElement('div');
+        actions.className = 'candidate-actions';
+        const select = document.createElement('select');
+        select.className = 'control';
+        state.brief.items.forEach((item, index) => {
+          const option = document.createElement('option');
+          option.value = String(index);
+          option.textContent = `替换第 ${index + 1} 条：${item.title}`;
+          select.append(option);
+        });
+        const swap = document.createElement('button');
+        swap.type = 'button';
+        swap.className = 'button';
+        swap.textContent = '换入';
+        swap.addEventListener('click', () => swapCandidate(alternates.indexOf(candidate), Number(select.value)));
+        actions.append(select, swap);
+        card.append(head, meta, summary, actions);
+        root.append(card);
+      });
+    }
+
+    function swapCandidate(alternateIndex, itemIndex) {
+      const incoming = state.brief.alternates[alternateIndex];
+      if (!incoming || !state.brief.items[itemIndex]) return;
+      state.brief.alternates.splice(alternateIndex, 1);
+      const outgoing = state.brief.items[itemIndex];
+      state.brief.items[itemIndex] = incoming;
+      if (outgoing) state.brief.alternates.push(outgoing);
+      markDirty();
+      render();
+    }
+
     function render() {
       renderOverview();
+      renderTrends();
       renderQuality();
       renderSignals();
+      renderCandidates();
       renderAnalysis();
       if (window.lucide) window.lucide.createIcons();
       updateApprovalButton();
@@ -537,12 +751,14 @@ REVIEW_HTML = r"""<!doctype html>
 
     async function loadReview() {
       try {
-        const response = await fetch('/api/review');
+        const response = await fetch('/api/review', { headers: authHeaders });
         if (!response.ok) throw new Error(`载入失败 (${response.status})`);
         const payload = await response.json();
         state.brief = payload.brief;
+        state.brief.alternates = Array.isArray(state.brief.alternates) ? state.brief.alternates : [];
         state.locks = new Set(payload.locked_fields || []);
         state.evidence = payload.evidence || {};
+        state.trends = payload.trends || {};
         state.quality = payload.quality || { issues: [], error_count: 0, warning_count: 0 };
         state.reviewStatus = payload.status || 'editing';
         state.dirty = false;
@@ -561,7 +777,7 @@ REVIEW_HTML = r"""<!doctype html>
       try {
         const response = await fetch('/api/review', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Review-Token': REVIEW_TOKEN },
           body: JSON.stringify({ brief: state.brief, locked_fields: [...state.locks] })
         });
         const payload = await response.json();
@@ -569,6 +785,7 @@ REVIEW_HTML = r"""<!doctype html>
         state.dirty = false;
         state.reviewStatus = 'editing';
         state.evidence = payload.evidence || state.evidence;
+        state.trends = payload.trends || state.trends;
         state.quality = payload.quality || state.quality;
         byId('save-status').textContent = '已保存';
         render();
@@ -586,7 +803,7 @@ REVIEW_HTML = r"""<!doctype html>
       button.disabled = true;
       byId('save-status').textContent = '确认中';
       try {
-        const response = await fetch('/api/approve', { method: 'POST' });
+        const response = await fetch('/api/approve', { method: 'POST', headers: authHeaders });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `确认失败 (${response.status})`);
         state.reviewStatus = payload.status;

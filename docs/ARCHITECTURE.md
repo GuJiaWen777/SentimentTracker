@@ -30,19 +30,22 @@ flowchart LR
 
 - `pipeline.py`：数据采集、Excel 归一化、规则备用模式、HTML 渲染、合规校验和微信公众号上传。
 - `llm_client.py`：OpenAI-compatible API、Claude CLI、Codex CLI 三种结构化 LLM 传输。
-- `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择和所有板块的语义生成。
-- `prompts.py`：CEO 受众的排名标尺、事实约束和整期分析提示词。
-- `cli.py`：参数、日期窗口、LLM 后端选择和发布门禁。
+- `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择、最多 6 条备选和所有板块的语义生成。
+- `ranking_cache.py`：按文章内容、模型和提示词版本索引的排名缓存，支持增量生成。
+- `signal_history.py`：SQLite 信号历史库，记录已批准报告的信号、分类和重点标签，并计算连续出现与跨周趋势。
+- `prompts.py`：CEO 受众的排名标尺、事实约束、历史趋势上下文和整期分析提示词。
+- `cli.py`：参数、日期窗口、LLM 后端选择、缓存与历史配置和发布门禁。
 
 HTML 视觉契约基于 `theme-earlydata-signal.html`：白色主背景、浅灰边框、4 个数据卡、关键信号、标签块、新闻条目与底部来源。渲染代码内置这一契约，因此运行项目不依赖本机 Codex skill 目录。
 
 ## 数据契约
 
-`articles.json` 是采集层与生成层之间的稳定接口：
+`articles.json` 是采集层与生成层之间的稳定接口。`article_id` 在首次生成时写入并持久化；后续重排或删除其他行不会改变已有文章的 ID，审核证据因此保持稳定。缺少 `article_id` 的旧文件在读取后按当前位置补齐。
 
 ```json
 {
   "articles": [{
+    "article_id": "a0001",
     "title": "文章标题",
     "source": "公众号名称",
     "published_at": "2026-05-30",
@@ -61,7 +64,22 @@ HTML 视觉契约基于 `theme-earlydata-signal.html`：白色主背景、浅灰
 
 `ranking.json` 保存窗口内每篇新闻的 LLM 分数、类别、排名理由和来源信息。重复标题也会被评分，只在进入最终综合候选池时去重。
 
-`brief.json` 是编辑审阅接口，包含模型与候选数量、日期窗口、仪表盘、重点公司/机构、重点药物/技术类型、6 条重点信号、行动建议和来源。
+`brief.json` 是编辑审阅接口，包含模型与候选数量、日期窗口、仪表盘、重点公司/机构、重点药物/技术类型、6 条重点信号、最多 6 条备选（`alternates`）、行动建议和来源。`items` 与 `alternates` 都带有 `article_id`、`score`、`category` 和 `reason`，审核台可以在两者之间换稿而不重新调用 LLM。
+
+## 增量生成与跨周历史
+
+- `data/cache/ranking.json` 按 `模型 + RANKING_PROMPT_VERSION + 文章内容/元数据` 生成缓存键。命中项直接复用分数、分类和理由；未命中项才进入分批排名。缓存写入失败只告警，不中断生成。
+- `data/history/signals.sqlite3` 以日期窗口为 `report_key`。审核批准时写入 `reports`、`signals` 和 `entities` 三张表；同一窗口重复批准是幂等覆盖。
+- `build`/`run` 默认读取窗口之前的历史，把连续出现实体和近期信号数量作为综合分析的只读上下文；`--no-history` 可以完全隔离。
+- `history report` 计算每个实体的连续出现期数（按已记录报告的窗口顺序）和本期相对上期的新增标签。
+
+```text
+ranking cache  ──命中──> 复用排名 ─┐
+      └──未命中──> LLM 排名 ───────┴──> 综合分析（含候选池）──> brief.json
+signal history ──只读上下文──> 综合分析
+       ▲
+       └──审核批准时写入
+```
 
 ## 可演进点
 

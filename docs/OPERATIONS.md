@@ -54,7 +54,42 @@ earlydata-weekly render --input data\reports\20260525_20260531\brief.json
 earlydata-weekly review --report-dir data\reports\20260525_20260531
 ```
 
-工作台默认监听 `127.0.0.1:8765`。编辑内容和字段锁定状态不会覆盖模型原稿；保存后生成 `brief.reviewed.json`、`review_state.json` 和 `reviewed/wechat_article_img.html`。
+工作台默认监听 `127.0.0.1:8765`。页面内嵌一次性 token，所有 `/api/*` 请求都会校验 token 和 `Host`；因此浏览器扩展、跨站页面和 DNS 重绑定无法读写审核数据。不要把 `--host` 设为 `0.0.0.0`，除非确实需要在可信局域网内访问。编辑内容和字段锁定状态不会覆盖模型原稿；保存后生成 `brief.reviewed.json`、`review_state.json` 和 `reviewed/wechat_article_img.html`。
+
+生成和采集都会按窗口过滤：`status` 的 `in_window_count` 显示窗口内条数，`issues` 会列出被忽略的窗口外条数。`build` 只把窗口内文章交给 LLM，但会保留完整的 `articles.json` 快照（含稳定 ID），避免误选窗口后丢失原始数据；`run` 在采集阶段就已过滤。
+
+审核台还提供两个辅助区块：
+
+- **候选池**：`brief.json` 的 `alternates` 最多 6 条。选择目标位置后点击“换入”即可替换最终信号，保存后重新渲染，无需重新调用 LLM。
+- **跨周趋势**：显示最近数期的信号数量、连续出现的公司和连续出现的技术标签，以及本期相对上期的新增标签。
+
+## 增量排名与跨周历史
+
+默认启用两个本地辅助文件，均已位于被 Git 忽略的 `data/` 下：
+
+```text
+data/cache/ranking.json          排名缓存
+data/history/signals.sqlite3     跨周信号库
+```
+
+`build`/`run` 默认复用排名缓存，只对新增或内容变化的文章调用 LLM。缓存键包含模型名和 `RANKING_PROMPT_VERSION`；修改排名提示词后应同步升级该版本号。
+
+```powershell
+earlydata-weekly build ... --no-ranking-cache   # 忽略缓存并重新排名
+earlydata-weekly build ... --no-history         # 不读取历史上下文
+earlydata-weekly build ... --ranking-cache "D:\cache\ranking.json"
+earlydata-weekly build ... --history-db "D:\history\signals.sqlite3"
+```
+
+审核批准时会自动把本期写入历史库；`review --no-history` 可以关闭趋势面板和自动记录。手动补录与查询：
+
+```powershell
+earlydata-weekly history record --report-dir data\reports\20260525_20260531
+earlydata-weekly history report --weeks 8 --format text
+earlydata-weekly history report --weeks 8 --format json --end 2026-05-31
+```
+
+历史库按日期窗口幂等覆盖：同一窗口重复批准或重复 `history record` 不会产生重复记录。历史写入失败不会阻止审核批准，错误记录在 `review_state.json` 的 `history_error`。
 
 ## 创建草稿
 
@@ -69,7 +104,7 @@ earlydata-weekly publish `
 
 执行前须在审核工作台保存人工稿并点击“确认发布稿”。确认状态记录产物哈希，任何后续修改都会阻止发布，必须重新审核确认。命令成功后将 `media_id` 和产物哈希写入 `publication_receipt.json`；同一版本再次运行默认直接返回已有回执，不重复创建草稿。
 
-只有迁移旧流程时才使用 `publish --file ... --allow-unreviewed`；该路径仍要求 `--title` 和 `--confirm`，但不会生成审核回执。
+只有迁移旧流程时才使用 `publish --file ... --allow-unreviewed`；该路径仍要求 `--title` 和 `--confirm`，但不会生成审核回执。为防止本地文件被带出，HTML 中 `<img src="...">` 的本地路径必须位于该 HTML 所在目录内；`--cover` 显式传入的本地图片路径不受此限制。
 
 ## 常见故障
 

@@ -80,6 +80,7 @@ class Article:
     like_count: int = 0
     share_count: int = 0
     recommend_count: int = 0
+    article_id: str = ""
 
     def score(self) -> float:
         return self.read_count * 0.35 + self.like_count * 8 + self.share_count * 12 + self.recommend_count * 10
@@ -100,8 +101,51 @@ def parse_day(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def validate_window(start: date, end: date) -> None:
+    if start > end:
+        raise ValueError(f"Window start {start.isoformat()} is after end {end.isoformat()}.")
+
+
 def window_slug(start: date, end: date) -> str:
     return f"{start:%Y%m%d}_{end:%Y%m%d}"
+
+
+def ensure_article_ids(articles: list[Article]) -> list[Article]:
+    """Assign a stable, persisted article_id to every article.
+
+    IDs already stored in articles.json are preserved, so reordering or
+    removing rows no longer shifts the evidence attached to a report item.
+    """
+    reserved = {
+        str(article.article_id).strip()
+        for article in articles
+        if str(article.article_id).strip()
+    }
+    seen: set[str] = set()
+    counter = 1
+    for article in articles:
+        article_id = str(article.article_id or "").strip()
+        if article_id and article_id not in seen:
+            seen.add(article_id)
+            article.article_id = article_id
+            continue
+        while f"a{counter:04d}" in seen or f"a{counter:04d}" in reserved:
+            counter += 1
+        article.article_id = f"a{counter:04d}"
+        seen.add(article.article_id)
+    return articles
+
+
+def filter_articles_by_window(articles: list[Article], start: date, end: date) -> tuple[list[Article], int]:
+    kept: list[Article] = []
+    excluded = 0
+    for article in articles:
+        published = _coerce_date(article.published_at)
+        if published is not None and start <= published <= end:
+            kept.append(article)
+        else:
+            excluded += 1
+    return kept, excluded
 
 
 def write_articles(path: Path, articles: list[Article]) -> None:
@@ -133,6 +177,7 @@ def read_articles(path: Path) -> list[Article]:
                 like_count=_number(raw.get("like_count")),
                 share_count=_number(raw.get("share_count")),
                 recommend_count=_number(raw.get("recommend_count")),
+                article_id=str(raw.get("article_id") or "").strip(),
             )
         )
     return articles
@@ -162,10 +207,15 @@ def validate_brief_data(data: Any) -> dict[str, Any]:
     missing = sorted(required - set(data))
     if missing:
         raise ValueError("brief.json is missing required fields: " + ", ".join(missing))
+    if not isinstance(data.get("items"), list):
+        raise ValueError("brief.json field 'items' must be an array.")
+    if "alternates" in data and not isinstance(data["alternates"], list):
+        raise ValueError("brief.json field 'alternates' must be an array.")
     return data
 
 
 def fetch_redfox(start: date, end: date, accounts: list[str], *, include_content: bool = True) -> list[Article]:
+    validate_window(start, end)
     api_key = os.environ.get("REDFOX_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("REDFOX_API_KEY is missing. Configure it in .env.")
@@ -205,10 +255,12 @@ def fetch_redfox(start: date, end: date, accounts: list[str], *, include_content
                 articles.append(article)
             if len(batch) < 20:
                 break
-    return sorted(articles, key=lambda item: item.published_at, reverse=True)
+    in_window = [article for article in articles if _within_window(article.published_at, start, end)]
+    return sorted(in_window, key=lambda item: item.published_at, reverse=True)
 
 
 def ingest_pb_xlsx(path: Path, start: date, end: date) -> list[Article]:
+    validate_window(start, end)
     from openpyxl import load_workbook
 
     book = load_workbook(path, read_only=True, data_only=True)
@@ -242,25 +294,15 @@ def ingest_pb_xlsx(path: Path, start: date, end: date) -> list[Article]:
 
 
 def build_brief(articles: list[Article], start: date, end: date, title: str | None = None) -> dict[str, Any]:
+    validate_window(start, end)
     if not articles:
         raise ValueError("No articles available for the selected window.")
-    selected = _select_key_signals(articles)
-    rows = []
-    for article in selected:
-        label, background, color = _signal_style(article)
-        rows.append(
-            {
-                "title": article.title,
-                "source": article.source,
-                "date": article.published_at,
-                "summary": _summary(article),
-                "signal": label,
-                "background": background,
-                "color": color,
-                "so_what": _so_what(article),
-                "url": article.url,
-            }
-        )
+    ensure_article_ids(articles)
+    pool = _ranked_pool(articles)
+    selected = pool[:6]
+    alternates = pool[6:12]
+    rows = [_brief_item(article) for article in selected]
+    alternate_rows = [_brief_item(article) for article in alternates]
     companies = _company_tags(selected)
     technologies = _technology_tags(selected)
     risk_count = sum(1 for article in selected if _signal_style(article)[0] == "监管")
@@ -282,10 +324,30 @@ def build_brief(articles: list[Article], start: date, end: date, title: str | No
         "companies": companies,
         "technologies": technologies,
         "items": rows,
+        "alternates": alternate_rows,
         "insights": [_so_what(article) for article in selected[:3]],
         "follow_up": [article.title for article in selected[3:6]],
         "sources": list(dict.fromkeys(article.source for article in selected if article.source)),
         "generation": {"mode": "rules"},
+    }
+
+
+def _brief_item(article: Article) -> dict[str, Any]:
+    label, background, color = _signal_style(article)
+    return {
+        "article_id": article.article_id,
+        "title": article.title,
+        "source": article.source,
+        "date": article.published_at,
+        "summary": _summary(article),
+        "signal": label,
+        "background": background,
+        "color": color,
+        "so_what": _so_what(article),
+        "url": article.url,
+        "score": None,
+        "category": "",
+        "reason": "规则模式：按启发式重要性排序",
     }
 
 
@@ -298,15 +360,40 @@ def generate_brief(
     generator: str = "llm",
     llm_client: Any | None = None,
     llm_backend: str | None = None,
+    ranking_cache_path: Path | None = None,
+    history_db: Path | None = None,
 ) -> dict[str, Any]:
     mode = generator.strip().lower()
-    if mode == "rules":
-        return build_brief(articles, start, end, title)
-    if mode != "llm":
+    if mode not in {"llm", "rules"}:
         raise ValueError("generator must be 'llm' or 'rules'.")
-    from .semantic_generation import build_semantic_brief
+    validate_window(start, end)
+    articles = ensure_article_ids(articles)
+    articles, excluded = filter_articles_by_window(articles, start, end)
+    if not articles:
+        raise ValueError(f"No articles available in window {start.isoformat()}..{end.isoformat()}.")
+    history_context = None
+    if history_db is not None:
+        from .signal_history import trend_context_for_window
 
-    return build_semantic_brief(articles, start, end, title, client=llm_client, backend=llm_backend)
+        history_context = trend_context_for_window(history_db, start)
+    if mode == "rules":
+        brief = build_brief(articles, start, end, title)
+    else:
+        from .semantic_generation import build_semantic_brief
+
+        brief = build_semantic_brief(
+            articles,
+            start,
+            end,
+            title,
+            client=llm_client,
+            backend=llm_backend,
+            ranking_cache_path=ranking_cache_path,
+            history_context=history_context,
+        )
+    brief["generation"]["excluded_outside_window"] = excluded
+    brief["generation"]["history_weeks"] = int((history_context or {}).get("window_count") or 0)
+    return brief
 
 
 def write_brief_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Path]:
@@ -345,14 +432,39 @@ def render_markdown(brief: dict[str, Any]) -> str:
         "",
         f"# {brief['title']}",
         "",
-        "## 本期关键信号",
-        brief["key_signal"],
+        f"{brief['window_start']} — {brief['window_end']}",
         "",
-        "## 本周最值得 CEO 关注",
+        "## 本周数据面板",
         "",
     ]
+    for label, value, _color in brief["dashboard"]:
+        lines.append(f"- **{label}**：{value}")
+    lines.extend(["", "## 本期关键信号", "", brief["key_signal"], ""])
+    if brief["companies"]:
+        lines.extend(["## 本期重点公司 / 机构", "", "、".join(brief["companies"]), ""])
+    if brief["technologies"]:
+        lines.extend(["## 本期重点药物 / 技术类型", "", "、".join(brief["technologies"]), ""])
+    lines.extend(["## 本周最值得 CEO 关注", ""])
     for item in brief["items"]:
-        lines.extend([f"### {item['title']}", item["summary"], f"- {item['signal']}：{item['so_what']}", ""])
+        lines.extend(
+            [
+                f"### {item['title']}",
+                "",
+                f"- 来源：{item['source']} · {item['date']}",
+                f"- 分类：{item['signal']}",
+                "",
+                item["summary"],
+                "",
+                f"**业务影响**：{item['so_what']}",
+                "",
+            ]
+        )
+    lines.extend(["## 本周对你的业务意味着什么", ""])
+    lines.extend(f"- {value}" for value in brief["insights"])
+    lines.extend(["", "## 后续追踪", ""])
+    lines.extend(f"- {value}" for value in brief["follow_up"])
+    source_text = " · ".join(brief["sources"])
+    lines.extend(["", "## 数据来源", "", f"{source_text}；本期纳入 {brief['source_count']} 篇相关文章。", ""])
     return "\n".join(lines)
 
 
@@ -401,7 +513,14 @@ def publish_draft(html_path: Path, *, title: str, cover: str, author: str, diges
     if not token:
         raise RuntimeError(f"WeChat token failed: {token_response.get('errmsg', 'unknown error')}")
     cover_media_id = _upload_image(cover, token, permanent=True, base_dir=html_path.parent)[0]
-    html = re.sub(r'<img[^>]+src=["\']([^"\']+)["\']', lambda match: match.group(0).replace(match.group(1), _upload_image(match.group(1), token, permanent=False, base_dir=html_path.parent)[1]), html)
+    html = re.sub(
+        r'<img[^>]+src=["\']([^"\']+)["\']',
+        lambda match: match.group(0).replace(
+            match.group(1),
+            _upload_image(match.group(1), token, permanent=False, base_dir=html_path.parent, restrict_to_base=True)[1],
+        ),
+        html,
+    )
     payload = {"articles": [{"title": title, "author": author, "digest": digest, "content": html, "content_source_url": source_url, "thumb_media_id": cover_media_id, "need_open_comment": 0, "only_fans_can_comment": 0}]}
     response = requests.post("https://api.weixin.qq.com/cgi-bin/draft/add", params={"access_token": token}, json=payload, timeout=30).json()
     media_id = response.get("media_id")
@@ -412,7 +531,17 @@ def publish_draft(html_path: Path, *, title: str, cover: str, author: str, diges
 
 def _redfox_article(raw: dict[str, Any], account: str) -> Article:
     value = raw.get("publishTime") or raw.get("publicTime") or raw.get("publishDate") or ""
-    return Article(title=str(raw.get("title") or raw.get("name") or "").strip(), source=account, published_at=str(value)[:10], url=str(raw.get("workUrl") or raw.get("url") or ""), read_count=_number(raw.get("readCount") or raw.get("clicksCount")), like_count=_number(raw.get("likeCount") or raw.get("likes")), share_count=_number(raw.get("shareCount") or raw.get("shares")), recommend_count=_number(raw.get("collectCount") or raw.get("recommendCount")))
+    published = _coerce_date(value)
+    return Article(
+        title=str(raw.get("title") or raw.get("name") or "").strip(),
+        source=account,
+        published_at=published.isoformat() if published else str(value)[:10],
+        url=str(raw.get("workUrl") or raw.get("url") or ""),
+        read_count=_number(raw.get("readCount") or raw.get("clicksCount")),
+        like_count=_number(raw.get("likeCount") or raw.get("likes")),
+        share_count=_number(raw.get("shareCount") or raw.get("shares")),
+        recommend_count=_number(raw.get("collectCount") or raw.get("recommendCount")),
+    )
 
 
 def _redfox_content(work_uuid: str, headers: dict[str, str]) -> str:
@@ -421,16 +550,23 @@ def _redfox_content(work_uuid: str, headers: dict[str, str]) -> str:
     return str(data.get("content") or "") if isinstance(data, dict) else ""
 
 
-def _upload_image(source: str, token: str, *, permanent: bool, base_dir: Path) -> tuple[str, str]:
+def _upload_image(
+    source: str,
+    token: str,
+    *,
+    permanent: bool,
+    base_dir: Path,
+    restrict_to_base: bool = False,
+) -> tuple[str, str]:
     parsed = urlparse(source)
     if parsed.scheme in {"http", "https"}:
         response = requests.get(source, timeout=30)
         response.raise_for_status()
         content, filename = response.content, Path(parsed.path).name or "image.png"
+    elif parsed.scheme:
+        raise RuntimeError(f"Unsupported image reference: {source}")
     else:
-        path = Path(source)
-        if not path.is_absolute():
-            path = base_dir / path
+        path = _local_image_path(source, base_dir, restrict_to_base=restrict_to_base)
         content, filename = path.read_bytes(), path.name
     content_type = mimetypes.guess_type(filename)[0] or "image/png"
     if permanent:
@@ -444,6 +580,18 @@ def _upload_image(source: str, token: str, *, permanent: bool, base_dir: Path) -
     if not permanent and not image_url:
         raise RuntimeError(f"Article image upload failed: {response.get('errmsg', response)}")
     return media_id, image_url
+
+
+def _local_image_path(source: str, base_dir: Path, *, restrict_to_base: bool) -> Path:
+    path = Path(source)
+    if not path.is_absolute():
+        path = base_dir / path
+    resolved = path.resolve()
+    if restrict_to_base and not resolved.is_relative_to(base_dir.resolve()):
+        raise RuntimeError(f"Article image path escapes the report directory: {source}")
+    if not resolved.is_file():
+        raise RuntimeError(f"Article image not found: {source}")
+    return resolved
 
 
 def _dashboard_card(label: str, value: str, color: str) -> str:
@@ -561,14 +709,14 @@ def _technology_tags(articles: list[Article]) -> list[str]:
     return [label for label, _count in counts.most_common(5)]
 
 
-def _select_key_signals(articles: list[Article]) -> list[Article]:
+def _ranked_pool(articles: list[Article]) -> list[Article]:
     ranked = sorted(articles, key=lambda item: (_biopharma_relevance(item), item.score(), item.published_at), reverse=True)
     unique_ranked = _dedupe_titles(ranked)
     editorial = [article for article in unique_ranked if not _is_promotional(article)]
     pool = editorial or unique_ranked
     strategic = [article for article in pool if _biopharma_relevance(article) >= 10]
     relevant = [article for article in pool if _biopharma_relevance(article) >= 3]
-    return (strategic or relevant or pool)[:6]
+    return strategic or relevant or pool
 
 
 def _biopharma_relevance(article: Article) -> int:
@@ -657,14 +805,30 @@ def _repair_title_symbols(title: str, content: str) -> str:
 
 
 def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
+    if isinstance(value, (int, float)):
+        seconds = float(value) / 1000 if float(value) > 1e11 else float(value)
+        try:
+            return datetime.fromtimestamp(seconds).date()
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
-        return date.fromisoformat(str(value)[:10])
+        return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+def _within_window(published_at: str, start: date, end: date) -> bool:
+    published = _coerce_date(published_at)
+    return published is not None and start <= published <= end
 
 
 def _string_list(value: Any) -> list[str]:

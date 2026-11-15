@@ -124,6 +124,8 @@ earlydata-weekly build `
 
 Use `--llm-backend api|claude|codex` only when the user selected a backend or the configured default is unavailable. If an LLM call fails, preserve existing artifacts, explain the error category, and offer retry or another configured LLM Adapter. Do not disguise failure with `--generator rules`.
 
+Ranking results are cached by article content, model, and prompt version, so rerunning `build` only ranks new or changed articles. Do not pass `--no-ranking-cache` unless the user explicitly asks for a full re-rank or the cache is suspected to be wrong. Historical signals under `data/history/signals.sqlite3` are read as cross-week context; use `--no-history` only when the user asks for an isolated run.
+
 After generation, rerun `status`. Require `ready_for_review` before opening the workbench.
 
 ## Review and approve
@@ -134,7 +136,7 @@ Start the workbench:
 earlydata-weekly review --report-dir "{report_dir}"
 ```
 
-Keep the local server running and give the user its URL. The user can edit, lock fields, inspect ranking evidence, resolve quality findings, save, and click **确认发布稿**.
+Keep the local server running and give the user its URL. The user can edit, lock fields, inspect ranking evidence, resolve quality findings, swap items from the candidate pool, review cross-week trends, save, and click **确认发布稿**. Candidate swaps reuse the pre-generated alternates and never call the LLM. Approval automatically records the report into the signal history database unless the workbench was started with `--no-history`.
 
 Wait for the user to say review is complete. Then rerun `status`:
 

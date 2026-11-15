@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .approval import load_approved_artifact, matching_publication_receipt
-from .pipeline import read_articles, read_brief
+from .pipeline import filter_articles_by_window, read_articles, read_brief
 
 
 ARTIFACTS = {
@@ -55,9 +55,20 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
     exists = {name: path.is_file() for name, path in paths.items()}
     issues: list[str] = []
     source_count = 0
+    in_window_count = 0
     if exists["articles"]:
         try:
-            source_count = len(read_articles(paths["articles"]))
+            articles = read_articles(paths["articles"])
+            source_count = len(articles)
+            in_window_count = source_count
+            if start is not None and end is not None:
+                kept, excluded = filter_articles_by_window(articles, start, end)
+                in_window_count = len(kept)
+                if excluded:
+                    issues.append(
+                        f"{excluded} articles in articles.json fall outside the requested window "
+                        f"{start.isoformat()}..{end.isoformat()} and will be ignored"
+                    )
         except (ValueError, json.JSONDecodeError) as exc:
             issues.append(f"articles.json is invalid: {exc}")
 
@@ -91,10 +102,12 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
         stage, next_action = "review_in_progress", "continue_review"
     elif exists["brief"] and exists["generated_html"]:
         stage, next_action = "ready_for_review", "open_review"
-    elif exists["articles"] and source_count:
+    elif exists["articles"] and in_window_count:
         stage, next_action = "articles_ready", "build_with_llm"
     else:
         stage, next_action = "empty", "choose_source"
+        if exists["articles"] and source_count and not in_window_count:
+            issues.append("articles.json contains no articles inside the requested window")
 
     if brief is not None and not exists["articles"]:
         issues.append("articles.json is missing; generated content can be reviewed, but source evidence is unavailable")
@@ -106,8 +119,9 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
         "stage": stage,
         "next_action": next_action,
         "source_count": source_count or (int(brief.get("source_count") or 0) if brief else 0),
+        "in_window_count": in_window_count,
         "reuse": {
-            "articles": exists["articles"] and source_count > 0,
+            "articles": exists["articles"] and in_window_count > 0,
             "generated_report": brief is not None and exists["generated_html"],
             "reviewed_report": exists["reviewed_brief"] and exists["reviewed_html"],
         },

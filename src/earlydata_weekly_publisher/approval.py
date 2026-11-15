@@ -21,7 +21,7 @@ class ApprovedArtifact:
     html_sha256: str
 
 
-def approve_report(report_dir: Path) -> dict[str, Any]:
+def approve_report(report_dir: Path, *, history_db: Path | None = None) -> dict[str, Any]:
     root = report_dir.resolve()
     brief_path = root / "brief.reviewed.json"
     state_path = root / "review_state.json"
@@ -44,6 +44,14 @@ def approve_report(report_dir: Path) -> dict[str, Any]:
         "quality_warning_count": quality["warning_count"],
     }
     _write_json_atomic(state_path, state)
+    if history_db is not None:
+        from .signal_history import record_report
+
+        try:
+            state["history"] = record_report(root, db_path=history_db)
+        except Exception as exc:  # History is advisory; never block editorial approval.
+            state["history_error"] = f"{type(exc).__name__}: {exc}"
+        _write_json_atomic(state_path, state)
     return state
 
 

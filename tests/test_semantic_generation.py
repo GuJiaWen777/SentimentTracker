@@ -30,6 +30,7 @@ class FakeSemanticLLM:
                 ]
             }
         selected = rows[:6]
+        alternates = rows[6:12]
         return {
             "key_signal": "本周主线是全球合作深化、监管证据要求提高与技术平台竞争加速，管理层需要同步复核权益结构、临床差异化和合规准备。",
             "dashboard": [
@@ -45,6 +46,15 @@ class FakeSemanticLLM:
                     "so_what": "复核自有管线、合作权益和全球开发资源配置。",
                 }
                 for row in selected
+            ],
+            "alternates": [
+                {
+                    "article_id": row["article_id"],
+                    "signal": "机会",
+                    "summary": f"备选摘要：{row['title']}值得保留为可替换信号。",
+                    "so_what": "如需调整本期选题，可优先替换为该条。",
+                }
+                for row in alternates
             ],
             "companies": ["辉瑞", "信达生物"],
             "technologies": ["ADC", "AI 制药"],
@@ -83,6 +93,7 @@ def test_llm_generator_ranks_every_article_and_writes_audit_file(tmp_path, monke
     assert llm.calls.count("earlydata_article_ranking") == 2
     assert llm.calls[-1] == "earlydata_weekly_synthesis"
     assert len(brief["items"]) == 6
+    assert brief["alternates"] == []
     assert all(item["summary"].startswith("语义摘要") for item in brief["items"])
     assert public_brief["generation"]["mode"] == "llm"
     assert public_brief["generation"]["ranked_article_count"] == 7
@@ -91,6 +102,30 @@ def test_llm_generator_ranks_every_article_and_writes_audit_file(tmp_path, monke
     assert ranking["article_count"] == 7
     assert len(ranking["items"]) == 7
     assert outputs["html"].exists()
+
+
+def test_llm_generator_exposes_alternate_candidates_with_ranking_metadata(tmp_path):
+    articles = [
+        Article(
+            title=f"公司{i}推进创新药合作与临床开发",
+            source=f"来源{i}",
+            published_at="2026-05-29",
+            content=f"第{i}条文章的事实证据与产业背景。",
+            url=f"https://example.com/{i}",
+        )
+        for i in range(1, 9)
+    ]
+    llm = FakeSemanticLLM()
+
+    brief = generate_brief(articles, date(2026, 5, 25), date(2026, 5, 31), generator="llm", llm_client=llm)
+
+    selected_ids = {item["article_id"] for item in brief["items"]}
+    alternate_ids = {item["article_id"] for item in brief["alternates"]}
+    assert len(brief["items"]) == 6
+    assert len(brief["alternates"]) == 2
+    assert selected_ids.isdisjoint(alternate_ids)
+    assert all(item["summary"].startswith("备选摘要") for item in brief["alternates"])
+    assert all(item["score"] is not None and item["background"] for item in brief["alternates"])
 
 
 def test_default_generator_fails_without_llm_config_instead_of_using_rules(monkeypatch):

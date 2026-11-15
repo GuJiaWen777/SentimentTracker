@@ -20,6 +20,9 @@ flowchart LR
 ## 核心能力
 
 - **LLM 语义生成**：对候选新闻进行批量语义排名，再生成关键信号、背景、影响判断、公司/机构标签、药物/技术标签及业务启示。默认不会在 LLM 失败时静默退回规则生成。
+- **增量排名缓存**：按文章内容和模型版本缓存排名分数，重复运行只对新增或变更文章调用 LLM；缓存命中情况写入 `generation.cache_hits` / `cache_misses`。
+- **候选池换稿**：综合分析同时生成最多 6 条备选，审核台可在不重新调用 LLM 的情况下替换最终 6 条信号。
+- **跨周信号库**：批准时把本期信号、标签和分类写入本地 SQLite，支持连续出现、本期新增和跨周数量趋势，并作为下一期综合分析的参考上下文。
 - **双数据源接入**：支持 RedFox API 在线获取，也支持导入本地 P&B 格式 Excel，并按报告日期窗口过滤。
 - **状态感知与断点续跑**：自动识别已有原始数据、生成稿、审核稿、批准状态和发布回执，优先复用有效产物，避免重复获取或重复调用 LLM。
 - **人工审核工作台**：在浏览器中编辑内容、锁定字段、查看排名证据、处理质量问题、预览公众号 HTML，并确认最终发布稿。
@@ -113,6 +116,14 @@ earlydata-weekly build `
 
 `--generator rules` 仅用于明确选择的离线兜底或测试，不会被自动启用。
 
+默认启用排名缓存（`data/cache/ranking.json`）和跨周历史上下文（`data/history/signals.sqlite3`）。如需完全重新排名或隔离环境，使用：
+
+```powershell
+earlydata-weekly build ... --no-ranking-cache --no-history
+```
+
+也可以用 `--ranking-cache`、`--history-db` 指定其他路径。
+
 ### 4. 人工审核
 
 ```powershell
@@ -137,6 +148,22 @@ https://www.earlydata.com/assets/early-data-logo.png
 
 同一批准版本已有有效 `publication_receipt.json` 时，命令会返回原 `media_id`。只有明确需要再次创建草稿时才使用 `--force-new-draft`。
 
+### 6. 查看跨周趋势
+
+审核批准时会把本期信号和重点标签写入历史库。也可以手动记录已有报告：
+
+```powershell
+earlydata-weekly history record --report-dir "data/reports/20260525_20260531"
+```
+
+查看最近 8 期：
+
+```powershell
+earlydata-weekly history report --weeks 8 --format text
+```
+
+输出包含每期监管/政策/竞争/机会数量、分类分布，以及连续出现在多期的公司和技术标签。下一期 `build` 会把这些历史作为综合分析的参考上下文，但不会把历史内容当作本期事实。
+
 ## 工作流状态
 
 | 状态 | 含义 | 建议动作 |
@@ -158,13 +185,20 @@ https://www.earlydata.com/assets/early-data-logo.png
 | --- | --- |
 | `articles.json` | 标准化后的原始新闻和来源证据 |
 | `ranking.json` | LLM 排名结果、分数与选择依据 |
-| `brief.json` | LLM 生成的结构化初稿 |
+| `brief.json` | LLM 生成的结构化初稿，含 `items` 与 `alternates` 候选池 |
 | `wechat_article.md` | 便于阅读和归档的 Markdown |
 | `wechat_article_img.html` | EarlyData 主题的公众号兼容 HTML |
 | `brief.reviewed.json` | 人工保存后的结构化审核稿 |
 | `reviewed/wechat_article_img.html` | 审核稿对应的最终 HTML |
 | `review_state.json` | 字段锁定、批准状态和内容哈希 |
 | `publication_receipt.json` | 微信草稿 `media_id` 与发布版本哈希 |
+
+全局辅助产物：
+
+| 文件 | 用途 |
+| --- | --- |
+| `data/cache/ranking.json` | 跨报告复用的排名缓存，按文章内容哈希索引 |
+| `data/history/signals.sqlite3` | 跨周信号、分类和重点标签历史库 |
 
 ## 配置
 
@@ -187,6 +221,12 @@ https://www.earlydata.com/assets/early-data-logo.png
 ## 质量与安全
 
 - 生成阶段保留来源文章和 LLM 排名证据，审核工作台可定位内容依据。
+- `articles.json` 中的文章 ID 会持久化；重排或删除其他文章不会让审核证据错位。
+- `fetch`、`build`、`run` 都只把请求窗口内的文章交给生成阶段；`build` 保留完整原始快照，`status` 会在 `issues` 中提示被忽略的条数。
+- 审核工作台只监听本机，并校验一次性 token 和 `Host`；拒绝 DNS 重绑定和跨站批准请求。
+- 审核台换稿只替换最终选择，不改写原始 `articles.json`；保存时会重新计算本期来源列表。
+- 跨周历史只在审核批准时自动写入；趋势数据失败不会阻止批准，但会记录到 `review_state.json` 的 `history_error`。
+- 发布时 HTML 中引用的本地图片必须位于报告目录内，显式 `--cover` 本地路径不受此限制。
 - HTML 输出在写入文件前执行公众号兼容性校验。
 - 质量检查覆盖标题、摘要、信号结构、证据引用和关键字段完整性。
 - 未批准的报告不能通过 `--report-dir` 发布。

@@ -1,10 +1,16 @@
 from datetime import date
 
+import pytest
+
 from earlydata_weekly_publisher.pipeline import (
     Article,
+    _local_image_path,
     build_brief,
+    ensure_article_ids,
+    generate_brief,
     read_articles,
     read_brief,
+    render_markdown,
     validate_html,
     write_articles,
     write_brief_outputs,
@@ -170,6 +176,81 @@ def test_read_articles_repairs_registered_mark_lost_in_title(tmp_path):
     articles = read_articles(path)
 
     assert articles[0].title == "迪哲医药舒沃哲®双重磅"
+
+
+def test_generate_brief_excludes_articles_outside_requested_window():
+    inside = Article(title="信达生物与辉瑞达成 ADC 合作", source="来源", published_at="2026-05-30", content="合作 授权 ADC")
+    outside = Article(title="旧闻：某药企达成合作", source="来源", published_at="2020-01-01", content="合作 授权 ADC")
+
+    brief = generate_brief([inside, outside], date(2026, 5, 25), date(2026, 5, 31), generator="rules")
+
+    assert [item["title"] for item in brief["items"]] == ["信达生物与辉瑞达成 ADC 合作"]
+    assert brief["generation"]["excluded_outside_window"] == 1
+
+
+def test_generate_brief_rejects_reversed_window():
+    article = Article(title="FDA 更新审评要求", source="来源", published_at="2026-05-30")
+
+    with pytest.raises(ValueError, match="after end"):
+        generate_brief([article], date(2026, 5, 31), date(2026, 5, 25), generator="rules")
+
+
+def test_article_ids_are_persisted_and_survive_reorder(tmp_path):
+    path = tmp_path / "articles.json"
+    articles = [
+        Article(title="第一篇", source="来源", published_at="2026-05-30"),
+        Article(title="第二篇", source="来源", published_at="2026-05-30"),
+    ]
+    ensure_article_ids(articles)
+    write_articles(path, articles)
+
+    reordered = read_articles(path)[::-1]
+    ensure_article_ids(reordered)
+
+    assert [(article.title, article.article_id) for article in reordered] == [
+        ("第二篇", "a0002"),
+        ("第一篇", "a0001"),
+    ]
+
+
+def test_article_ids_replace_duplicates_without_renaming_unique_ones():
+    articles = [
+        Article(title="第一篇", source="来源", published_at="2026-05-30", article_id="a0007"),
+        Article(title="第二篇", source="来源", published_at="2026-05-30", article_id="a0007"),
+        Article(title="第三篇", source="来源", published_at="2026-05-30"),
+    ]
+
+    ensure_article_ids(articles)
+
+    assert [article.article_id for article in articles] == ["a0007", "a0001", "a0002"]
+
+
+def test_markdown_includes_every_report_section():
+    article = Article(
+        title="辉瑞与信达生物达成 ADC 全球授权合作",
+        source="医药魔方",
+        published_at="2026-05-30",
+        content="双方将推进抗体偶联药物的临床开发和商业化。",
+    )
+    brief = build_brief([article], date(2026, 5, 25), date(2026, 5, 31))
+
+    markdown = render_markdown(brief)
+
+    for heading in ("本周数据面板", "本期关键信号", "本期重点公司 / 机构", "本期重点药物 / 技术类型", "本周对你的业务意味着什么", "后续追踪", "数据来源"):
+        assert heading in markdown
+    assert "辉瑞" in markdown
+    assert "ADC" in markdown
+
+
+def test_local_article_images_cannot_escape_report_directory(tmp_path):
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    (report_dir / "ok.png").write_bytes(b"image")
+
+    assert _local_image_path("ok.png", report_dir, restrict_to_base=True) == (report_dir / "ok.png").resolve()
+
+    with pytest.raises(RuntimeError, match="escapes the report directory"):
+        _local_image_path("../outside.png", report_dir, restrict_to_base=True)
 
 
 def test_reviewed_brief_can_be_rendered_without_generation(tmp_path):
