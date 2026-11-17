@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 from earlydata_weekly_publisher.approval import approve_report, load_approved_artifact, write_publication_receipt
@@ -23,6 +24,7 @@ def _article():
 def test_status_recommends_source_for_empty_window(tmp_path):
     status = inspect_workflow_status(tmp_path, start=START, end=END)
 
+    assert status["schema_version"] == 1
     assert status["stage"] == "empty"
     assert status["next_action"] == "choose_source"
     assert status["reuse"]["articles"] is False
@@ -59,6 +61,23 @@ def test_status_moves_from_review_to_approved_and_published(tmp_path):
     published = inspect_workflow_status(tmp_path, start=START, end=END)
     assert published["stage"] == "published"
     assert published["gates"]["published"] is True
+
+
+def test_status_surfaces_a_failed_run_manifest(tmp_path):
+    (tmp_path / "run.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "error": {"type": "RuntimeError", "message": "boom"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = inspect_workflow_status(tmp_path, start=START, end=END)
+
+    assert any("last run failed" in issue and "boom" in issue for issue in status["issues"])
 
 
 def test_status_ignores_articles_outside_requested_window(tmp_path):

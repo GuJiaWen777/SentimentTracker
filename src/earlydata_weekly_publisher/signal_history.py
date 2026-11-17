@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .artifacts import check as check_artifact
+from .artifacts import stamp as stamp_artifact
 from .pipeline import read_brief
 
 
@@ -219,12 +221,15 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
                 "entities": sorted(week_entities.get(key, []), key=lambda entry: (entry["kind"], entry["name"])),
             }
         )
-    return {
-        "window_count": len(rows),
-        "weeks": weeks_out,
-        "entities": entities[:30],
-        "persistent_entities": [entry for entry in entities if entry["streak"] >= 2][:20],
-    }
+    return stamp_artifact(
+        "history",
+        {
+            "window_count": len(rows),
+            "weeks": weeks_out,
+            "entities": entities[:30],
+            "persistent_entities": [entry for entry in entities if entry["streak"] >= 2][:20],
+        },
+    )
 
 
 def trend_context_for_window(db_path: Path | None, start: date, *, weeks: int = 8) -> dict[str, Any]:
@@ -270,15 +275,18 @@ def trend_context_for_report(db_path: Path | None, brief: dict[str, Any], *, wee
 
 
 def _empty_summary(error: str = "") -> dict[str, Any]:
-    summary: dict[str, Any] = {
-        "window_count": 0,
-        "weeks": [],
-        "entities": [],
-        "persistent_entities": [],
-        "current_entities": [],
-        "new_entities": [],
-        "continuing_entities": [],
-    }
+    summary: dict[str, Any] = stamp_artifact(
+        "history",
+        {
+            "window_count": 0,
+            "weeks": [],
+            "entities": [],
+            "persistent_entities": [],
+            "current_entities": [],
+            "new_entities": [],
+            "continuing_entities": [],
+        },
+    )
     if error:
         summary["error"] = error
     return summary
@@ -297,6 +305,8 @@ def _ranking_map(path: Path) -> dict[str, dict[str, Any]]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            check_artifact("ranking", data)
     except (OSError, ValueError):
         return {}
     rows = data.get("items", []) if isinstance(data, dict) else []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
@@ -11,6 +12,7 @@ from .llm_client import create_llm_client
 from .prompts import (
     RANKING_PROMPT_VERSION,
     RANKING_SYSTEM_PROMPT,
+    SYNTHESIS_PROMPT_VERSION,
     SYNTHESIS_SYSTEM_PROMPT,
     ranking_prompt,
     synthesis_prompt,
@@ -131,6 +133,7 @@ def build_semantic_brief(
 ) -> dict[str, Any]:
     if not articles:
         raise ValueError("No articles available for the selected window.")
+    started = time.monotonic()
     llm = client or create_llm_client(backend)
     from .pipeline import ensure_article_ids
 
@@ -184,13 +187,22 @@ def build_semantic_brief(
         "sources": list(dict.fromkeys(item["source"] for item in items if item["source"])),
         "generation": {
             "mode": "llm",
+            "backend": str(getattr(llm, "backend", "") or backend or os.environ.get("LLM_BACKEND") or "custom"),
             "model": llm.model_name,
+            "prompt_versions": {
+                "ranking": RANKING_PROMPT_VERSION,
+                "synthesis": SYNTHESIS_PROMPT_VERSION,
+            },
             "ranked_article_count": len(rankings),
             "unique_article_count": len(unique_rankings),
             "candidate_count": candidate_count,
+            "synthesis_candidates": _env_int("LLM_SYNTHESIS_CANDIDATES", 24, minimum=6, maximum=60),
+            "rank_batch_size": _env_int("LLM_RANK_BATCH_SIZE", 40, minimum=5, maximum=100),
             "cache_hits": cache.hits if cache else 0,
             "cache_misses": cache.misses if cache else len(rankings),
             "history_weeks": int((history_context or {}).get("window_count") or 0),
+            "usage": dict(getattr(llm, "usage", {}) or {}),
+            "duration_seconds": round(time.monotonic() - started, 3),
         },
         "_ranking": {
             "window_start": start.isoformat(),

@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import urlparse, urlsplit
 
 from .approval import approve_report
+from .artifacts import check as check_artifact
+from .artifacts import stamp as stamp_artifact
 from .pipeline import read_brief, validate_brief_data, write_rendered_outputs
 from .quality import build_review_context
 
@@ -40,7 +42,7 @@ class ReviewWorkspace:
         if self.state_path.is_file():
             raw_state = json.loads(self.state_path.read_text(encoding="utf-8"))
             if isinstance(raw_state, dict):
-                state = raw_state
+                state = check_artifact("review_state", raw_state)
         context = build_review_context(self.report_dir, brief)
         return {
             "brief": brief,
@@ -53,7 +55,7 @@ class ReviewWorkspace:
         }
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
-        brief = validate_brief_data(payload.get("brief"))
+        brief = stamp_artifact("brief", validate_brief_data(payload.get("brief")))
         brief.setdefault("alternates", [])
         brief["sources"] = list(
             dict.fromkeys(
@@ -64,11 +66,14 @@ class ReviewWorkspace:
         )
         locked_fields = _string_list(payload.get("locked_fields"))
         updated_at = datetime.now(timezone.utc).isoformat()
-        state = {
-            "status": "editing",
-            "updated_at": updated_at,
-            "locked_fields": locked_fields,
-        }
+        state = stamp_artifact(
+            "review_state",
+            {
+                "status": "editing",
+                "updated_at": updated_at,
+                "locked_fields": locked_fields,
+            },
+        )
         _write_json_atomic(self.reviewed_path, brief)
         _write_json_atomic(self.state_path, state)
         outputs = write_rendered_outputs(brief, self.preview_dir)

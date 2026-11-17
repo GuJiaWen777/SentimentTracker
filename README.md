@@ -28,7 +28,9 @@ flowchart LR
 - **双数据源**：RedFox API 在线采集，或导入本地 P&B 格式 Excel；两条路径都会按报告日期窗口过滤。
 - **断点续跑**：自动识别原始数据、生成稿、审核稿、批准状态和发布回执，优先复用有效产物。
 - **人工审核工作台**：在浏览器中编辑内容、锁定字段、查看排名证据、处理质量问题、换入候选、查看趋势，并确认最终发布稿。
-- **发布安全门禁**：审核批准与发布授权是两个独立步骤；发布前校验审核稿与 HTML 哈希，发布后保存回执，默认阻止重复创建相同草稿。
+- **发布安全门禁**：审核批准与发布授权是两个独立步骤；发布前校验审核稿与 HTML 哈希，发布后保存回执，默认阻止重复创建相同草稿；重新批准后可用 `--update-draft` 更新原草稿。
+- **可复现运行**：每次生成写出 `run.json`，记录模型、提示词版本、git 提交、token 用量、缓存命中和产物哈希；所有报告与状态 JSON 都带 `schema_version`。
+- **环境自检**：`earlydata-weekly doctor` 检查 Python、`.env`、LLM 后端、数据目录、缓存与历史库、审核端口，只报告“已配置/未配置”，不输出密钥。
 - **Agent 引导交付**：仓库自带项目级 Skill，可用自然语言完成日期确认、来源选择、复用判断、审核与发布。
 
 ## 快速开始
@@ -47,6 +49,14 @@ Copy-Item .env.example .env
 ```
 
 按所选数据源、LLM 后端和发布账号填写 `.env`。`.env` 与 `data/` 均已被 Git 忽略，不要提交真实密钥。
+
+首次运行前先做一次环境自检：
+
+```powershell
+earlydata-weekly doctor --format text
+```
+
+`doctor` 发现错误时返回非零退出码；警告（例如尚未配置发布账号）不影响本地生成。
 
 ### 2. 方式 A：让 Agent 引导
 
@@ -110,6 +120,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 
 | 命令 | 作用 | 调用 LLM |
 | --- | --- | --- |
+| `doctor` | 检查本机配置、凭据、数据目录与端口 | 否 |
 | `status` | 检查产物、状态、可复用项与待处理问题 | 否 |
 | `fetch` | 从 RedFox API 采集文章 | 否 |
 | `ingest-xlsx` | 导入 P&B Excel 文章 | 否 |
@@ -134,7 +145,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `approved` | 审核稿与 HTML 哈希有效 | 单独确认是否发布草稿 |
 | `published` | 当前批准版本已有发布回执 | 返回回执，避免重复发布 |
 
-`status` 输出中的 `reuse` 表示可复用的产物，`gates` 表示审核与发布门禁，`issues` 会列出窗口不匹配、窗口外文章、缺少原始数据等问题。
+`status` 输出中的 `reuse` 表示可复用的产物，`gates` 表示审核与发布门禁，`issues` 会列出窗口不匹配、窗口外文章、缺少原始数据、制品版本过新以及上一次运行失败等问题。
 
 ## 主要产物
 
@@ -150,7 +161,8 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `brief.reviewed.json` | 人工保存后的结构化审核稿 |
 | `reviewed/wechat_article_img.html` | 审核稿对应的最终 HTML |
 | `review_state.json` | 字段锁定、批准状态、内容哈希与历史写入结果 |
-| `publication_receipt.json` | 微信草稿 `media_id` 与发布版本哈希 |
+| `publication_receipt.json` | 微信草稿 `media_id`、发布版本哈希与更新次数 |
+| `run.json` | 本次运行的后端、模型、提示词版本、用量、缓存与产物哈希 |
 
 跨报告复用的辅助文件：
 
@@ -171,6 +183,8 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 - `publish` 必须显式传入 `--confirm`，且只创建草稿，不群发。
 - HTML 中引用的本地图片必须位于报告目录内；显式 `--cover` 传入的本地路径不受此限制。
 - 同一批准版本已有有效回执时，发布命令直接返回原 `media_id`；只有明确需要新草稿时才使用 `--force-new-draft`。
+- 报告重新审核批准后，`publish --update-draft` 会更新回执中的原草稿，而不是再创建一条重复草稿。
+- 微信 access token 在进程内缓存并自动刷新；网络错误、限流和 token 失效会指数退避重试；封面和文章图片按内容哈希去重上传。
 - 旧流程迁移可使用 `publish --file ... --allow-unreviewed`，但该路径仍要求 `--title` 与 `--confirm`。
 
 ## 配置
@@ -192,6 +206,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `REDFOX_API_KEY` | 使用 RedFox API 时必填 |
 | `EARLYDATA_RANKING_CACHE` | 排名缓存路径，默认 `data/cache/ranking.json` |
 | `EARLYDATA_HISTORY_DB` | 跨周历史库路径，默认 `data/history/signals.sqlite3` |
+| `EARLYDATA_WECHAT_CACHE` | 微信图片素材缓存，默认 `data/cache/wechat_media.json` |
 | `WECHAT_APP_ID` / `WECHAT_APP_SECRET` | 写入公众号草稿箱时必填 |
 | `WECHAT_AUTHOR` | 公众号文章作者，默认 `EARLY DATA` |
 
@@ -199,6 +214,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 
 | 现象 | 处理 |
 | --- | --- |
+| 不确定环境哪里有问题 | 先运行 `earlydata-weekly doctor --format text` |
 | `REDFOX_API_KEY is missing` | 在项目根目录 `.env` 配置密钥后重试 |
 | `LLM_API_KEY/LLM_API_MODEL is required` | 配置 OpenAI 兼容 API，或显式改用 `--llm-backend claude/codex` |
 | Claude `402 Insufficient Balance` | 为当前网关充值，或改用其他已配置后端 |
@@ -214,7 +230,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 pytest -q
 ```
 
-测试覆盖状态机、窗口过滤、排名缓存、跨周历史、审核服务器鉴权、HTML 合规与发布门禁。
+测试覆盖状态机、窗口过滤、排名缓存、跨周历史、审核服务器鉴权、HTML 合规、制品版本兼容、运行清单与发布门禁。GitHub Actions 在 Windows 和 Linux、Python 3.10 与 3.12 上执行 `compileall`、`ruff` 和 `pytest`。
 
 进一步说明：
 
@@ -227,15 +243,19 @@ pytest -q
 
 ```text
 src/earlydata_weekly_publisher/
-  pipeline.py            数据采集、窗口过滤、brief 渲染与微信草稿发布
+  pipeline.py            数据采集、窗口过滤、brief 与 Markdown/HTML 渲染
   semantic_generation.py LLM 排名与综合分析
-  llm_client.py          API / Claude CLI / Codex CLI 传输层
+  llm_client.py          API / Claude CLI / Codex CLI 传输层与用量统计
+  wechat.py              微信草稿创建/更新、token 刷新、图片去重上传
   ranking_cache.py       增量排名缓存
   signal_history.py      跨周信号库与趋势
   review_app.py          本地审核工作台与 API
-  approval.py            审核哈希与批准状态
+  approval.py            审核哈希、批准状态与发布回执
   quality.py             内容质量检查
   workflow_status.py     可恢复状态机
+  doctor.py              环境与配置自检
+  artifacts.py           制品 schema_version 校验
+  run_manifest.py        运行清单 run.json
   cli.py                 命令行入口
 tests/                   pytest 测试
 docs/                    架构、内容规则、运行手册与 ADR

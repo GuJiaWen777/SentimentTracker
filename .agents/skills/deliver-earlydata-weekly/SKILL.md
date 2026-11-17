@@ -47,6 +47,14 @@ Without `--report-dir`, `status` compares directories matching `{window_slug}*` 
 
 Do not ask for a source until after reading `stage`, `next_action`, `reuse`, `gates`, and `issues`. Follow [references/state-machine.md](references/state-machine.md) when the state is unclear or inconsistent.
 
+If a command fails with a configuration, credential, or dependency error, run:
+
+```powershell
+earlydata-weekly doctor --format text
+```
+
+Fix `error` checks first; `warn` checks only block the feature they cover. Never print `.env` values or keys. The status output is stamped with `schema_version`; treat unknown newer versions as a version mismatch, not as missing fields.
+
 ## Guide the next decision
 
 ### `empty`
@@ -168,7 +176,7 @@ Only after an explicit “确认发布”, “发布”, “可以发”, or equ
 earlydata-weekly publish --report-dir "{report_dir}" --confirm
 ```
 
-The command validates approval hashes and writes `publication_receipt.json`. If the same HTML already has a receipt, report the existing `media_id`; do not create a duplicate draft. Use `--force-new-draft` only after the user explicitly asks for another draft.
+The command validates approval hashes and writes `publication_receipt.json`. If the same HTML already has a receipt, report the existing `media_id`; do not create a duplicate draft. Use `--force-new-draft` only after the user explicitly asks for another draft. If the report was re-approved after a small correction and a receipt already exists, ask whether to update the existing draft, then use `--update-draft` with a new explicit publish confirmation.
 
 ## Finish the conversation
 

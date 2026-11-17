@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import mimetypes
 import os
 import re
 from collections import Counter
@@ -14,6 +13,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+
+from .artifacts import check as check_artifact
+from .artifacts import stamp as stamp_artifact
+# Re-exported for backward compatibility; publishing now lives in ``wechat.py``.
+from .wechat import _local_image_path, publish_draft  # noqa: F401
 
 
 DEFAULT_COVER = "https://www.earlydata.com/assets/early-data-logo.png"
@@ -150,11 +154,14 @@ def filter_articles_by_window(articles: list[Article], start: date, end: date) -
 
 def write_articles(path: Path, articles: list[Article]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"articles": [asdict(article) for article in articles]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = stamp_artifact("articles", {"articles": [asdict(article) for article in articles]})
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def read_articles(path: Path) -> list[Article]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        check_artifact("articles", data)
     rows = data.get("articles", data) if isinstance(data, dict) else data
     if not isinstance(rows, list):
         raise ValueError("articles.json must contain an articles array.")
@@ -184,7 +191,9 @@ def read_articles(path: Path) -> list[Article]:
 
 
 def read_brief(path: Path) -> dict[str, Any]:
-    return validate_brief_data(json.loads(path.read_text(encoding="utf-8")))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    check_artifact("brief", data)
+    return validate_brief_data(data)
 
 
 def validate_brief_data(data: Any) -> dict[str, Any]:
@@ -399,13 +408,16 @@ def generate_brief(
 def write_brief_outputs(brief: dict[str, Any], output_dir: Path) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     brief_path = output_dir / "brief.json"
-    public_brief = {key: value for key, value in brief.items() if not key.startswith("_")}
+    public_brief = stamp_artifact("brief", {key: value for key, value in brief.items() if not key.startswith("_")})
     brief_path.write_text(json.dumps(public_brief, ensure_ascii=False, indent=2), encoding="utf-8")
     outputs = {"brief": brief_path, **write_rendered_outputs(brief, output_dir)}
     ranking = brief.get("_ranking")
     if isinstance(ranking, dict):
         ranking_path = output_dir / "ranking.json"
-        ranking_path.write_text(json.dumps(ranking, ensure_ascii=False, indent=2), encoding="utf-8")
+        ranking_path.write_text(
+            json.dumps(stamp_artifact("ranking", ranking), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         outputs["ranking"] = ranking_path
     return outputs
 
@@ -502,33 +514,6 @@ def validate_html(html: str) -> None:
         raise ValueError("HTML validation failed: text outside leaf span: " + "；".join(checker.unwrapped[:3]))
 
 
-def publish_draft(html_path: Path, *, title: str, cover: str, author: str, digest: str = "", source_url: str = "") -> str:
-    html = html_path.read_text(encoding="utf-8")
-    validate_html(html)
-    app_id, secret = os.environ.get("WECHAT_APP_ID", ""), os.environ.get("WECHAT_APP_SECRET", "")
-    if not app_id or not secret:
-        raise RuntimeError("WECHAT_APP_ID and WECHAT_APP_SECRET are required.")
-    token_response = requests.get("https://api.weixin.qq.com/cgi-bin/token", params={"grant_type": "client_credential", "appid": app_id, "secret": secret}, timeout=20).json()
-    token = token_response.get("access_token")
-    if not token:
-        raise RuntimeError(f"WeChat token failed: {token_response.get('errmsg', 'unknown error')}")
-    cover_media_id = _upload_image(cover, token, permanent=True, base_dir=html_path.parent)[0]
-    html = re.sub(
-        r'<img[^>]+src=["\']([^"\']+)["\']',
-        lambda match: match.group(0).replace(
-            match.group(1),
-            _upload_image(match.group(1), token, permanent=False, base_dir=html_path.parent, restrict_to_base=True)[1],
-        ),
-        html,
-    )
-    payload = {"articles": [{"title": title, "author": author, "digest": digest, "content": html, "content_source_url": source_url, "thumb_media_id": cover_media_id, "need_open_comment": 0, "only_fans_can_comment": 0}]}
-    response = requests.post("https://api.weixin.qq.com/cgi-bin/draft/add", params={"access_token": token}, json=payload, timeout=30).json()
-    media_id = response.get("media_id")
-    if not media_id:
-        raise RuntimeError(f"WeChat draft failed: {response.get('errmsg', response)}")
-    return str(media_id)
-
-
 def _redfox_article(raw: dict[str, Any], account: str) -> Article:
     value = raw.get("publishTime") or raw.get("publicTime") or raw.get("publishDate") or ""
     published = _coerce_date(value)
@@ -548,50 +533,6 @@ def _redfox_content(work_uuid: str, headers: dict[str, str]) -> str:
     response = requests.post(REDFOX_DETAIL_URL, json={"source": "earlydata-weekly-publisher", "workUuid": work_uuid}, headers=headers, timeout=30).json()
     data = response.get("data") or {}
     return str(data.get("content") or "") if isinstance(data, dict) else ""
-
-
-def _upload_image(
-    source: str,
-    token: str,
-    *,
-    permanent: bool,
-    base_dir: Path,
-    restrict_to_base: bool = False,
-) -> tuple[str, str]:
-    parsed = urlparse(source)
-    if parsed.scheme in {"http", "https"}:
-        response = requests.get(source, timeout=30)
-        response.raise_for_status()
-        content, filename = response.content, Path(parsed.path).name or "image.png"
-    elif parsed.scheme:
-        raise RuntimeError(f"Unsupported image reference: {source}")
-    else:
-        path = _local_image_path(source, base_dir, restrict_to_base=restrict_to_base)
-        content, filename = path.read_bytes(), path.name
-    content_type = mimetypes.guess_type(filename)[0] or "image/png"
-    if permanent:
-        url, params = "https://api.weixin.qq.com/cgi-bin/material/add_material", {"access_token": token, "type": "image"}
-    else:
-        url, params = "https://api.weixin.qq.com/cgi-bin/media/uploadimg", {"access_token": token}
-    response = requests.post(url, params=params, files={"media": (filename, content, content_type)}, timeout=30).json()
-    media_id, image_url = str(response.get("media_id") or ""), str(response.get("url") or "")
-    if permanent and not media_id:
-        raise RuntimeError(f"Cover upload failed: {response.get('errmsg', response)}")
-    if not permanent and not image_url:
-        raise RuntimeError(f"Article image upload failed: {response.get('errmsg', response)}")
-    return media_id, image_url
-
-
-def _local_image_path(source: str, base_dir: Path, *, restrict_to_base: bool) -> Path:
-    path = Path(source)
-    if not path.is_absolute():
-        path = base_dir / path
-    resolved = path.resolve()
-    if restrict_to_base and not resolved.is_relative_to(base_dir.resolve()):
-        raise RuntimeError(f"Article image path escapes the report directory: {source}")
-    if not resolved.is_file():
-        raise RuntimeError(f"Article image not found: {source}")
-    return resolved
 
 
 def _dashboard_card(label: str, value: str, color: str) -> str:

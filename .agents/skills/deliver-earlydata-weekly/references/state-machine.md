@@ -1,6 +1,6 @@
 # Workflow State Machine
 
-Use `earlydata-weekly status` as the source of truth. Inspect filesystem details only to diagnose an `issues` entry.
+Use `earlydata-weekly status` as the source of truth. Inspect filesystem details only to diagnose an `issues` entry. Status includes `schema_version`; if it is newer than the skill understands, report a version mismatch and upgrade the tool instead of guessing fields.
 
 | Stage | Reuse | User-facing decision | Next command |
 | --- | --- | --- | --- |
@@ -9,7 +9,7 @@ Use `earlydata-weekly status` as the source of truth. Inspect filesystem details
 | `ready_for_review` | Model brief and generated HTML | Open review | `review` |
 | `review_in_progress` | Human edits and locks | Continue review; do not regenerate | `review` |
 | `approved` | Hash-verified reviewed brief and HTML | Publish or reopen review | `publish --report-dir ... --confirm` after consent |
-| `published` | Existing draft receipt | Stop or explicitly create another draft | No command by default |
+| `published` | Existing draft receipt | Stop, update the existing draft, or explicitly create another | No command by default; `--update-draft` after re-approval |
 
 ## Reuse policy
 

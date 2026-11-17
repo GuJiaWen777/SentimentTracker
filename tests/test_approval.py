@@ -73,4 +73,21 @@ def test_publication_receipt_prevents_duplicate_draft_for_same_html(tmp_path):
 
     assert receipt_path.name == "publication_receipt.json"
     assert receipt["media_id"] == "draft-media-1"
+    assert receipt["schema_version"] == 1
     assert json.loads(receipt_path.read_text(encoding="utf-8"))["html_sha256"] == artifact.html_sha256
+
+
+def test_publication_receipt_tracks_draft_updates(tmp_path):
+    _workspace(tmp_path)
+    approve_report(tmp_path)
+    artifact = load_approved_artifact(tmp_path)
+    write_publication_receipt(artifact, media_id="draft-media-1", title=artifact.title)
+    first = matching_publication_receipt(artifact)
+
+    write_publication_receipt(artifact, media_id="draft-media-1", title=artifact.title, updated=True)
+    updated = matching_publication_receipt(artifact)
+
+    assert updated["status"] == "draft_updated"
+    assert updated["update_count"] == 1
+    assert updated["published_at"] == first["published_at"]
+    assert updated["updated_at"] >= first["updated_at"]

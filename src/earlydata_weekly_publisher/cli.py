@@ -25,6 +25,7 @@ from .pipeline import (
     write_rendered_outputs,
 )
 from .ranking_cache import DEFAULT_RANKING_CACHE
+from .run_manifest import RunManifest
 from .signal_history import default_history_db, record_report, trend_summary
 
 
@@ -80,6 +81,10 @@ def main() -> int:
     status.add_argument("--start", default=None, help="YYYY-MM-DD")
     status.add_argument("--end", default=None, help="YYYY-MM-DD")
 
+    doctor = commands.add_parser("doctor", help="Check local configuration, credentials, and data files.")
+    doctor.add_argument("--format", choices=("json", "text"), default="json")
+    doctor.add_argument("--review-port", type=int, default=8765)
+
     history = commands.add_parser("history", help="Record reports and inspect cross-week signal trends.")
     history_commands = history.add_subparsers(dest="history_command", required=True)
     history_record = history_commands.add_parser("record", help="Record one report's signals into the history database.")
@@ -102,7 +107,9 @@ def main() -> int:
     publish.add_argument("--source-url", default="")
     publish.add_argument("--confirm", action="store_true", help="Required acknowledgement before draft creation.")
     publish.add_argument("--allow-unreviewed", action="store_true", help="Required with --file to bypass the review gate.")
-    publish.add_argument("--force-new-draft", action="store_true", help="Create another draft even when this approved version has a receipt.")
+    draft_mode = publish.add_mutually_exclusive_group()
+    draft_mode.add_argument("--force-new-draft", action="store_true", help="Create another draft even when this approved version has a receipt.")
+    draft_mode.add_argument("--update-draft", action="store_true", help="Update the existing receipt draft after re-approval.")
 
     args = parser.parse_args()
     load_dotenv(Path(args.env_root))
@@ -136,6 +143,15 @@ def main() -> int:
         return 0
     if args.command == "history":
         return _history(args)
+    if args.command == "doctor":
+        from .doctor import format_doctor, run_doctor
+
+        report = run_doctor(Path(args.env_root), review_port=args.review_port)
+        if args.format == "text":
+            print(format_doctor(report))
+        else:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["ok"] else 1
     if args.command == "status":
         from .workflow_status import discover_report_dir, inspect_workflow_status
 
@@ -153,17 +169,30 @@ def main() -> int:
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
     artifact = None
+    update_media_id: str | None = None
     if args.report_dir:
-        from .approval import load_approved_artifact, matching_publication_receipt, write_publication_receipt
+        from .approval import (
+            load_approved_artifact,
+            matching_publication_receipt,
+            read_publication_receipt,
+            write_publication_receipt,
+        )
 
         artifact = load_approved_artifact(Path(args.report_dir))
         receipt = matching_publication_receipt(artifact)
         if receipt and not args.force_new_draft:
             print(json.dumps({**receipt, "status": "draft_already_created"}, ensure_ascii=False))
             return 0
+        if args.update_draft:
+            previous = read_publication_receipt(artifact.report_dir)
+            update_media_id = str(previous.get("media_id") or "")
+            if not update_media_id:
+                parser.error("--update-draft requires an existing publication_receipt.json.")
         html_path = artifact.html_path
         title = args.title or artifact.title
     else:
+        if args.update_draft:
+            parser.error("--update-draft requires --report-dir.")
         if not args.allow_unreviewed:
             parser.error("publish --file requires --allow-unreviewed; prefer --report-dir for reviewed publishing.")
         if not args.title:
@@ -171,10 +200,23 @@ def main() -> int:
         html_path = Path(args.file)
         title = args.title
     author = args.author or os.environ.get("WECHAT_AUTHOR", "EARLY DATA")
-    media_id = publish_draft(html_path, title=title, cover=args.cover, author=author, digest=args.digest, source_url=args.source_url)
+    media_id = publish_draft(
+        html_path,
+        title=title,
+        cover=args.cover,
+        author=author,
+        digest=args.digest,
+        source_url=args.source_url,
+        update_media_id=update_media_id,
+    )
     if artifact is not None:
-        write_publication_receipt(artifact, media_id=media_id, title=title)
-    print(json.dumps({"media_id": media_id, "status": "draft_created"}, ensure_ascii=False))
+        write_publication_receipt(artifact, media_id=media_id, title=title, updated=bool(update_media_id))
+    print(
+        json.dumps(
+            {"media_id": media_id, "status": "draft_updated" if update_media_id else "draft_created"},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -221,26 +263,33 @@ def _build(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
     validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
-    articles = ensure_article_ids(read_articles(Path(args.input)))
-    in_window, excluded = filter_articles_by_window(articles, start, end)
-    if not in_window:
-        raise ValueError(f"No articles in {args.input} fall inside {start.isoformat()}..{end.isoformat()}.")
-    if excluded:
-        print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
-    # Keep the full source snapshot (now with stable IDs); generation filters it.
-    write_articles(output_dir / "articles.json", articles)
-    brief = generate_brief(
-        articles,
-        start,
-        end,
-        args.title,
-        generator=args.generator,
-        llm_backend=args.llm_backend,
-        ranking_cache_path=_cache_path(args),
-        history_db=_history_path(args),
-    )
-    outputs = write_brief_outputs(brief, output_dir)
-    print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
+    cache_path, history_path = _cache_path(args), _history_path(args)
+    with RunManifest(output_dir, command="build", start=start, end=end) as manifest:
+        manifest.set("input", str(Path(args.input)))
+        manifest.set("cache", {"enabled": cache_path is not None and args.generator == "llm", "path": str(cache_path) if cache_path else ""})
+        manifest.set("history", {"enabled": history_path is not None, "path": str(history_path) if history_path else ""})
+        articles = ensure_article_ids(read_articles(Path(args.input)))
+        in_window, excluded = filter_articles_by_window(articles, start, end)
+        if not in_window:
+            raise ValueError(f"No articles in {args.input} fall inside {start.isoformat()}..{end.isoformat()}.")
+        if excluded:
+            print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
+        manifest.set("counts", {"in_window_count": len(in_window)})
+        # Keep the full source snapshot (now with stable IDs); generation filters it.
+        write_articles(output_dir / "articles.json", articles)
+        brief = generate_brief(
+            articles,
+            start,
+            end,
+            args.title,
+            generator=args.generator,
+            llm_backend=args.llm_backend,
+            ranking_cache_path=cache_path,
+            history_db=history_path,
+        )
+        outputs = write_brief_outputs(brief, output_dir)
+        manifest.record(brief, outputs)
+        print(json.dumps({key: str(value) for key, value in outputs.items()}, ensure_ascii=False))
     return 0
 
 
@@ -249,31 +298,46 @@ def _run(args: argparse.Namespace) -> int:
     validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
     raw_path = output_dir / "articles.json"
-    if args.source == "redfox":
-        articles = fetch_redfox(start, end, args.account, include_content=not args.no_content)
-    else:
-        if not args.xlsx:
-            raise ValueError("--xlsx is required when --source xlsx.")
-        articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
-    articles = ensure_article_ids(articles)
-    articles, excluded = filter_articles_by_window(articles, start, end)
-    if not articles:
-        raise ValueError(f"No articles fall inside {start.isoformat()}..{end.isoformat()}.")
-    if excluded:
-        print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
-    write_articles(raw_path, articles)
-    brief = generate_brief(
-        articles,
-        start,
-        end,
-        args.title,
-        generator=args.generator,
-        llm_backend=args.llm_backend,
-        ranking_cache_path=_cache_path(args),
-        history_db=_history_path(args),
-    )
-    outputs = write_brief_outputs(brief, output_dir)
-    print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
+    cache_path, history_path = _cache_path(args), _history_path(args)
+    with RunManifest(output_dir, command="run", start=start, end=end) as manifest:
+        manifest.set("cache", {"enabled": cache_path is not None and args.generator == "llm", "path": str(cache_path) if cache_path else ""})
+        manifest.set("history", {"enabled": history_path is not None, "path": str(history_path) if history_path else ""})
+        if args.source == "redfox":
+            articles = fetch_redfox(start, end, args.account, include_content=not args.no_content)
+        else:
+            if not args.xlsx:
+                raise ValueError("--xlsx is required when --source xlsx.")
+            articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
+        acquired = len(ensure_article_ids(articles))
+        articles, excluded = filter_articles_by_window(articles, start, end)
+        if not articles:
+            raise ValueError(f"No articles fall inside {start.isoformat()}..{end.isoformat()}.")
+        if excluded:
+            print(f"[window] excluded {excluded} articles outside {start.isoformat()}..{end.isoformat()}", file=sys.stderr, flush=True)
+        manifest.set(
+            "acquisition",
+            {
+                "source": args.source,
+                "account_count": len(args.account),
+                "acquired_count": acquired,
+                "excluded_outside_window": excluded,
+            },
+        )
+        manifest.set("counts", {"in_window_count": len(articles)})
+        write_articles(raw_path, articles)
+        brief = generate_brief(
+            articles,
+            start,
+            end,
+            args.title,
+            generator=args.generator,
+            llm_backend=args.llm_backend,
+            ranking_cache_path=cache_path,
+            history_db=history_path,
+        )
+        outputs = write_brief_outputs(brief, output_dir)
+        manifest.record(brief, outputs)
+        print(json.dumps({"articles": str(raw_path), **{key: str(value) for key, value in outputs.items()}}, ensure_ascii=False))
     return 0
 
 

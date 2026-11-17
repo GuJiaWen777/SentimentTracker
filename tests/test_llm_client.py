@@ -72,6 +72,43 @@ def test_client_retries_without_schema_when_provider_rejects_it():
     assert "response_format" not in second["json"]
 
 
+def test_api_retries_transient_errors_and_records_usage(monkeypatch):
+    monkeypatch.setattr("earlydata_weekly_publisher.llm_client.time.sleep", lambda _seconds: None)
+    session = FakeSession(
+        [
+            FakeResponse(503, {}, "busy"),
+            FakeResponse(
+                200,
+                {
+                    "choices": [{"message": {"content": json.dumps({"ok": True})}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                },
+            ),
+        ]
+    )
+    client = OpenAICompatibleClient(
+        LLMConfig(api_key="secret", model="test-model", base_url="https://llm.example/v1"),
+        session=session,
+    )
+
+    result = client.complete_json(
+        system_prompt="system",
+        prompt="prompt",
+        schema_name="test_output",
+        schema={"type": "object"},
+    )
+
+    assert result == {"ok": True}
+    assert len(session.calls) == 2
+    assert client.usage == {
+        "calls": 1,
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+        "cost_usd": 0.0,
+    }
+
+
 def test_claude_cli_client_returns_structured_output():
     calls = []
 

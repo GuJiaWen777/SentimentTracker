@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .artifacts import check as check_artifact
+from .artifacts import stamp as stamp_artifact
 from .pipeline import read_brief, write_rendered_outputs
 from .quality import build_review_context
 
@@ -32,17 +34,20 @@ def approve_report(report_dir: Path, *, history_db: Path | None = None) -> dict[
     if quality["error_count"]:
         raise ValueError(f"Review has {quality['error_count']} blocking quality errors.")
     html_path = write_rendered_outputs(brief, root / "reviewed")["html"]
-    previous = _read_json(state_path)
+    previous = _read_json(state_path, kind="review_state")
     approved_at = datetime.now(timezone.utc).isoformat()
-    state = {
-        "status": "approved",
-        "updated_at": approved_at,
-        "approved_at": approved_at,
-        "locked_fields": _string_list(previous.get("locked_fields")),
-        "brief_sha256": _sha256(brief_path),
-        "html_sha256": _sha256(html_path),
-        "quality_warning_count": quality["warning_count"],
-    }
+    state = stamp_artifact(
+        "review_state",
+        {
+            "status": "approved",
+            "updated_at": approved_at,
+            "approved_at": approved_at,
+            "locked_fields": _string_list(previous.get("locked_fields")),
+            "brief_sha256": _sha256(brief_path),
+            "html_sha256": _sha256(html_path),
+            "quality_warning_count": quality["warning_count"],
+        },
+    )
     _write_json_atomic(state_path, state)
     if history_db is not None:
         from .signal_history import record_report
@@ -59,7 +64,7 @@ def load_approved_artifact(report_dir: Path) -> ApprovedArtifact:
     root = report_dir.resolve()
     brief_path = root / "brief.reviewed.json"
     html_path = root / "reviewed" / "wechat_article_img.html"
-    state = _read_json(root / "review_state.json")
+    state = _read_json(root / "review_state.json", kind="review_state")
     if state.get("status") != "approved":
         raise ValueError("Report must be approved in the review workbench before publishing.")
     if not brief_path.is_file() or not html_path.is_file():
@@ -78,26 +83,45 @@ def load_approved_artifact(report_dir: Path) -> ApprovedArtifact:
     )
 
 
+def read_publication_receipt(report_dir: Path) -> dict[str, Any]:
+    return _read_json(Path(report_dir) / "publication_receipt.json", kind="publication_receipt")
+
+
 def matching_publication_receipt(artifact: ApprovedArtifact) -> dict[str, Any] | None:
-    receipt = _read_json(artifact.report_dir / "publication_receipt.json")
+    receipt = read_publication_receipt(artifact.report_dir)
     if receipt.get("html_sha256") == artifact.html_sha256 and receipt.get("media_id"):
         return receipt
     return None
 
 
-def write_publication_receipt(artifact: ApprovedArtifact, *, media_id: str, title: str) -> Path:
+def write_publication_receipt(
+    artifact: ApprovedArtifact,
+    *,
+    media_id: str,
+    title: str,
+    updated: bool = False,
+) -> Path:
     path = artifact.report_dir / "publication_receipt.json"
-    _write_json_atomic(
-        path,
+    previous = read_publication_receipt(artifact.report_dir)
+    try:
+        update_count = int(previous.get("update_count") or 0)
+    except (TypeError, ValueError):
+        update_count = 0
+    now = datetime.now(timezone.utc).isoformat()
+    payload = stamp_artifact(
+        "publication_receipt",
         {
-            "status": "draft_created",
+            "status": "draft_updated" if updated else "draft_created",
             "media_id": media_id,
             "title": title,
-            "published_at": datetime.now(timezone.utc).isoformat(),
+            "published_at": str(previous.get("published_at") or now),
+            "updated_at": now,
             "brief_sha256": artifact.brief_sha256,
             "html_sha256": artifact.html_sha256,
+            "update_count": update_count + (1 if updated else 0),
         },
     )
+    _write_json_atomic(path, payload)
     return path
 
 
@@ -105,11 +129,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json(path: Path, *, kind: str | None = None) -> dict[str, Any]:
     if not path.is_file():
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    if kind is not None:
+        check_artifact(kind, value)
+    return value
 
 
 def _write_json_atomic(path: Path, value: Any) -> None:

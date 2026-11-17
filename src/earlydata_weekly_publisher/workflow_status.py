@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .approval import load_approved_artifact, matching_publication_receipt
+from .artifacts import check as check_artifact
+from .artifacts import stamp as stamp_artifact
 from .pipeline import filter_articles_by_window, read_articles, read_brief
 
 
@@ -18,6 +20,7 @@ ARTIFACTS = {
     "reviewed_html": "reviewed/wechat_article_img.html",
     "review_state": "review_state.json",
     "publication_receipt": "publication_receipt.json",
+    "run_manifest": "run.json",
 }
 STAGE_PRIORITY = {
     "empty": 0,
@@ -91,8 +94,10 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
         artifact = load_approved_artifact(root)
         approved = True
         published = matching_publication_receipt(artifact) is not None
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         artifact = None
+        if "schema_version" in str(exc):
+            issues.append(str(exc))
 
     if published:
         stage, next_action = "published", "report_complete"
@@ -112,27 +117,41 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
     if brief is not None and not exists["articles"]:
         issues.append("articles.json is missing; generated content can be reviewed, but source evidence is unavailable")
 
-    return {
-        "report_dir": str(root),
-        "window_start": start.isoformat() if start else (str(brief.get("window_start")) if brief else ""),
-        "window_end": end.isoformat() if end else (str(brief.get("window_end")) if brief else ""),
-        "stage": stage,
-        "next_action": next_action,
-        "source_count": source_count or (int(brief.get("source_count") or 0) if brief else 0),
-        "in_window_count": in_window_count,
-        "reuse": {
-            "articles": exists["articles"] and in_window_count > 0,
-            "generated_report": brief is not None and exists["generated_html"],
-            "reviewed_report": exists["reviewed_brief"] and exists["reviewed_html"],
+    if exists["run_manifest"]:
+        try:
+            run = check_artifact("run", json.loads(paths["run_manifest"].read_text(encoding="utf-8")))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            issues.append(f"run.json is invalid: {exc}")
+        else:
+            if run.get("status") == "failed":
+                error = run.get("error") if isinstance(run.get("error"), dict) else {}
+                message = str(error.get("message") or "unknown error")
+                issues.append(f"last run failed: {error.get('type') or 'Error'}: {message}")
+
+    return stamp_artifact(
+        "status",
+        {
+            "report_dir": str(root),
+            "window_start": start.isoformat() if start else (str(brief.get("window_start")) if brief else ""),
+            "window_end": end.isoformat() if end else (str(brief.get("window_end")) if brief else ""),
+            "stage": stage,
+            "next_action": next_action,
+            "source_count": source_count or (int(brief.get("source_count") or 0) if brief else 0),
+            "in_window_count": in_window_count,
+            "reuse": {
+                "articles": exists["articles"] and in_window_count > 0,
+                "generated_report": brief is not None and exists["generated_html"],
+                "reviewed_report": exists["reviewed_brief"] and exists["reviewed_html"],
+            },
+            "gates": {
+                "can_review": brief is not None and (exists["generated_html"] or exists["reviewed_html"]),
+                "approved": approved,
+                "published": published,
+            },
+            "artifacts": {
+                name: {"path": str(path), "exists": exists[name]}
+                for name, path in paths.items()
+            },
+            "issues": issues,
         },
-        "gates": {
-            "can_review": brief is not None and (exists["generated_html"] or exists["reviewed_html"]),
-            "approved": approved,
-            "published": published,
-        },
-        "artifacts": {
-            name: {"path": str(path), "exists": exists[name]}
-            for name, path in paths.items()
-        },
-        "issues": issues,
-    }
+    )

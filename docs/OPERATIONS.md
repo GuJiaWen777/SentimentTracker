@@ -13,6 +13,15 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
+首次运行或排障时先执行自检：
+
+```powershell
+earlydata-weekly doctor --format text
+earlydata-weekly doctor --format json   # 供 Agent/脚本读取
+```
+
+自检只显示“已配置/未配置”，不会输出密钥。存在 `error` 时命令返回 1；`warn` 不影响本地生成。
+
 使用 P&B Excel 生成：
 
 ```powershell
@@ -30,13 +39,14 @@ earlydata-weekly run --source redfox --start 2026-05-25 --end 2026-05-31 `
 
 ## 发布前检查
 
-检查对应目录中的五个产物：
+检查对应目录中的产物：
 
 1. `articles.json`：文章数量、日期窗口和原始链接正确。
 2. `ranking.json`：条目数等于源文章数，ID 唯一，分数和理由与 CEO 重要性一致。
 3. `brief.json`：`generation.mode=llm`，重点信号不重复，标签和业务影响能由原文支持。
 4. `wechat_article.md`：标题、日期和封面 URL 正确。
 5. `wechat_article_img.html`：在浏览器或公众号编辑器预览中确认层级、文字换行和链接。
+6. `run.json`：确认后端、模型、提示词版本、token 用量、缓存命中与产物哈希符合本次预期；失败运行也会写入错误类型和信息。
 
 `run` 已在输出前执行 HTML 合规校验，发布时会再次执行。校验失败时不要手工删除 `<span leaf="">`，应修正渲染代码或输入文本。
 
@@ -69,6 +79,7 @@ earlydata-weekly review --report-dir data\reports\20260525_20260531
 
 ```text
 data/cache/ranking.json          排名缓存
+data/cache/wechat_media.json     微信图片素材去重缓存（发布时生成）
 data/history/signals.sqlite3     跨周信号库
 ```
 
@@ -104,12 +115,22 @@ earlydata-weekly publish `
 
 执行前须在审核工作台保存人工稿并点击“确认发布稿”。确认状态记录产物哈希，任何后续修改都会阻止发布，必须重新审核确认。命令成功后将 `media_id` 和产物哈希写入 `publication_receipt.json`；同一版本再次运行默认直接返回已有回执，不重复创建草稿。
 
+修正错别字或小范围调整后，重新审核批准并更新原草稿（而不是新建）：
+
+```powershell
+earlydata-weekly publish --report-dir data\reports\20260525_20260531 --update-draft --confirm
+```
+
+该命令要求回执中已有 `media_id`；仅在内容哈希变化时执行。微信 access token 会缓存并按 `expires_in` 刷新，网络错误、限流和 token 失效会指数退避重试；封面和文章图片按内容哈希去重上传。
+
 只有迁移旧流程时才使用 `publish --file ... --allow-unreviewed`；该路径仍要求 `--title` 和 `--confirm`，但不会生成审核回执。为防止本地文件被带出，HTML 中 `<img src="...">` 的本地路径必须位于该 HTML 所在目录内；`--cover` 显式传入的本地图片路径不受此限制。
 
 ## 常见故障
 
 | 现象 | 处理 |
 | --- | --- |
+| 环境或凭据不确定 | 运行 `earlydata-weekly doctor --format text`，按 `error` 项处理。 |
+| `schema_version` 过新 | 该文件由更新版本写出；升级本工具后再读取，不要手工改版本号。 |
 | `REDFOX_API_KEY is missing` | 在项目根目录 `.env` 配置密钥，重新运行。 |
 | `LLM_API_KEY/LLM_API_MODEL is required` | 配置 OpenAI-compatible API，或显式改用 `--llm-backend claude/codex`。 |
 | Claude `402 Insufficient Balance` | 为当前 Claude 网关充值或改用其他已配置 LLM 后端。 |

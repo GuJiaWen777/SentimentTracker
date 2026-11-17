@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ import requests
 
 
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+REQUEST_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -45,9 +48,12 @@ class LLMConfig:
 
 
 class OpenAICompatibleClient:
+    backend = "api"
+
     def __init__(self, config: LLMConfig | None = None, *, session: Any | None = None) -> None:
         self.config = config or LLMConfig.from_env()
         self._session = session or requests.Session()
+        self.usage = _new_usage()
 
     @property
     def model_name(self) -> str:
@@ -84,6 +90,7 @@ class OpenAICompatibleClient:
             body = response.json()
         except (ValueError, TypeError) as exc:
             raise RuntimeError("LLM API returned malformed JSON.") from exc
+        _record_usage(self, body.get("usage") if isinstance(body, dict) else None)
         message = _assistant_message(body)
         parsed = message.get("parsed") if isinstance(message, dict) else None
         if isinstance(parsed, dict):
@@ -94,21 +101,34 @@ class OpenAICompatibleClient:
     def _post(self, payload: dict[str, Any]) -> Any:
         base = self.config.base_url.rstrip("/")
         url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
-        try:
-            return self._session.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.config.timeout,
-            )
-        except requests.RequestException as exc:
-            raise RuntimeError(f"LLM API request failed: {exc}") from exc
+        last_error: Exception | None = None
+        for attempt in range(REQUEST_ATTEMPTS):
+            try:
+                response = self._session.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self.config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.config.timeout,
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < REQUEST_ATTEMPTS - 1:
+                    time.sleep(min(8.0, 0.5 * 2**attempt))
+                    continue
+                raise RuntimeError(f"LLM API request failed: {exc}") from exc
+            if getattr(response, "status_code", 0) in RETRYABLE_HTTP_STATUS and attempt < REQUEST_ATTEMPTS - 1:
+                time.sleep(min(8.0, 0.5 * 2**attempt))
+                continue
+            return response
+        raise RuntimeError(f"LLM API request failed: {last_error}") from last_error
 
 
 class ClaudeCLIClient:
+    backend = "claude"
+
     def __init__(
         self,
         *,
@@ -128,6 +148,7 @@ class ClaudeCLIClient:
         if self._timeout <= 0:
             raise RuntimeError("LLM_CLAUDE_TIMEOUT must be greater than zero.")
         self._runner = runner
+        self.usage = _new_usage()
 
     @property
     def model_name(self) -> str:
@@ -176,6 +197,8 @@ class ClaudeCLIClient:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError("Claude CLI returned malformed JSON.") from exc
+        if isinstance(payload, dict):
+            _record_usage(self, payload.get("usage"), cost=payload.get("total_cost_usd"))
         structured = payload.get("structured_output") if isinstance(payload, dict) else None
         if isinstance(structured, dict):
             return structured
@@ -188,6 +211,8 @@ class ClaudeCLIClient:
 
 
 class CodexCLIClient:
+    backend = "codex"
+
     def __init__(
         self,
         *,
@@ -207,6 +232,7 @@ class CodexCLIClient:
         if self._timeout <= 0:
             raise RuntimeError("LLM_CODEX_TIMEOUT must be greater than zero.")
         self._runner = runner
+        self.usage = _new_usage()
 
     @property
     def model_name(self) -> str:
@@ -261,6 +287,7 @@ class CodexCLIClient:
                 raise RuntimeError(f"Codex CLI failed with exit code {completed.returncode}: {preview}")
             if not output_path.is_file():
                 raise RuntimeError("Codex CLI did not write its final structured response.")
+            _record_usage(self)
             return _parse_json_object(output_path.read_text(encoding="utf-8"))
 
 
@@ -295,6 +322,53 @@ def _message_content(message: dict[str, Any]) -> str:
         if text:
             return text
     raise RuntimeError("LLM API assistant message has no text content.")
+
+
+def _new_usage() -> dict[str, float | int]:
+    return {
+        "calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+    }
+
+
+def _record_usage(client: Any, usage: Any = None, *, cost: Any = None) -> None:
+    """Accumulate provider usage on the client for the run manifest."""
+    target = getattr(client, "usage", None)
+    if not isinstance(target, dict):
+        target = _new_usage()
+        setattr(client, "usage", target)
+    target["calls"] = int(target.get("calls", 0)) + 1
+    if isinstance(usage, dict):
+        prompt = _as_int(usage.get("prompt_tokens", usage.get("input_tokens")))
+        completion = _as_int(usage.get("completion_tokens", usage.get("output_tokens")))
+        total = _as_int(usage.get("total_tokens")) or prompt + completion
+        target["prompt_tokens"] = int(target.get("prompt_tokens", 0)) + prompt
+        target["completion_tokens"] = int(target.get("completion_tokens", 0)) + completion
+        target["total_tokens"] = int(target.get("total_tokens", 0)) + total
+    amount = _as_float(cost)
+    if amount:
+        target["cost_usd"] = round(float(target.get("cost_usd", 0.0)) + amount, 6)
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
