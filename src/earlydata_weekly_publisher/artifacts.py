@@ -15,6 +15,7 @@ SCHEMA_VERSIONS: dict[str, int] = {
     "brief": 1,
     "ranking": 1,
     "review_state": 1,
+    "review_log": 1,
     "publication_receipt": 1,
     "run": 1,
     "status": 1,

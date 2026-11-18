@@ -11,6 +11,7 @@ from .artifacts import stamp as stamp_artifact
 from .brief import read_brief, write_rendered_outputs
 from .io_utils import sha256_file, write_json_atomic
 from .quality import build_review_context
+from .review_log import append_event, summarize_quality
 from .text import dedupe_strings
 
 
@@ -49,6 +50,19 @@ def approve_report(report_dir: Path, *, history_db: Path | None = None) -> dict[
         },
     )
     write_json_atomic(state_path, state)
+    try:
+        append_event(
+            root,
+            {
+                "type": "approve",
+                "brief_sha256": state["brief_sha256"],
+                "html_sha256": state["html_sha256"],
+                "quality": summarize_quality(quality),
+            },
+        )
+    except Exception as exc:  # The audit trail must never block editorial approval.
+        state["review_log_error"] = f"{type(exc).__name__}: {exc}"
+        write_json_atomic(state_path, state)
     if history_db is not None:
         from .signal_history import record_report
 

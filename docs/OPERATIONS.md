@@ -64,14 +64,23 @@ earlydata-weekly render --input data\reports\20260525_20260531\brief.json
 earlydata-weekly review --report-dir data\reports\20260525_20260531
 ```
 
-工作台默认监听 `127.0.0.1:8765`。页面内嵌一次性 token，所有 `/api/*` 请求都会校验 token 和 `Host`；因此浏览器扩展、跨站页面和 DNS 重绑定无法读写审核数据。不要把 `--host` 设为 `0.0.0.0`，除非确实需要在可信局域网内访问。编辑内容和字段锁定状态不会覆盖模型原稿；保存后生成 `brief.reviewed.json`、`review_state.json` 和 `reviewed/wechat_article_img.html`。
+工作台默认监听 `127.0.0.1:8765`。页面内嵌一次性 token，所有 `/api/*` 请求都会校验 token 和 `Host`；因此浏览器扩展、跨站页面和 DNS 重绑定无法读写审核数据。不要把 `--host` 设为 `0.0.0.0`，除非确实需要在可信局域网内访问。编辑内容和字段锁定状态不会覆盖模型原稿；保存后生成 `brief.reviewed.json`、`review_state.json`、`review_log.json` 和 `reviewed/wechat_article_img.html`。
 
 生成和采集都会按窗口过滤：`status` 的 `in_window_count` 显示窗口内条数，`issues` 会列出被忽略的窗口外条数。`build` 只把窗口内文章交给 LLM，但会保留完整的 `articles.json` 快照（含稳定 ID），避免误选窗口后丢失原始数据；`run` 在采集阶段就已过滤。
 
 审核台还提供两个辅助区块：
 
 - **候选池**：`brief.json` 的 `alternates` 最多 6 条。选择目标位置后点击“换入”即可替换最终信号，保存后重新渲染，无需重新调用 LLM。
-- **跨周趋势**：显示最近数期的信号数量、连续出现的公司和连续出现的技术标签，以及本期相对上期的新增标签。
+- **跨周趋势**：显示最近数期的信号数量、质量趋势、连续出现的公司和连续出现的技术标签，以及本期相对上期的新增标签。
+
+每次保存都会向 `review_log.json` 追加一条 `save` 事件，记录字段级修改、候选换稿和锁定字段；批准与发布会分别追加 `approve`/`publish` 事件。查看时间线：
+
+```powershell
+earlydata-weekly review-log --report-dir data\reports\20260525_20260531
+earlydata-weekly review-log --report-dir data\reports\20260525_20260531 --format json
+```
+
+审计写入失败不会阻止编辑、批准或发布，错误会出现在保存响应或 `review_state.json` 的 `review_log_error`。
 
 ## 增量排名与跨周历史
 
@@ -80,7 +89,8 @@ earlydata-weekly review --report-dir data\reports\20260525_20260531
 ```text
 data/cache/ranking.json          排名缓存
 data/cache/wechat_media.json     微信图片素材去重缓存（发布时生成）
-data/history/signals.sqlite3     跨周信号库
+data/history/signals.sqlite3     跨周信号库（含 quality_samples）
+data/entities.json               可选的公司/技术别名覆盖
 ```
 
 `build`/`run` 默认复用排名缓存，只对新增或内容变化的文章调用 LLM。缓存键包含模型名和 `RANKING_PROMPT_VERSION`；修改排名提示词后应同步升级该版本号。
@@ -100,7 +110,20 @@ earlydata-weekly history report --weeks 8 --format text
 earlydata-weekly history report --weeks 8 --format json --end 2026-05-31
 ```
 
-历史库按日期窗口幂等覆盖：同一窗口重复批准或重复 `history record` 不会产生重复记录。历史写入失败不会阻止审核批准，错误记录在 `review_state.json` 的 `history_error`。
+历史库按日期窗口幂等覆盖：同一窗口重复批准或重复 `history record` 不会产生重复记录。历史写入失败不会阻止审核批准，错误记录在 `review_state.json` 的 `history_error`。批准时的质量统计会写入 `quality_samples`，`history report` 的 `quality_trend` 显示错误/警告数量的逐期变化。
+
+### 实体别名
+
+内置词典已覆盖常见公司中英文名和常见技术缩写（如 `Pfizer`/`辉瑞制药` → `辉瑞`，`CAR T` → `CAR-T`）。需要补充时创建 `data/entities.json`（或在 `EARLYDATA_ENTITY_ALIASES` 指向其他路径）：
+
+```json
+{
+  "company": {"默克": "默沙东", "江苏恒瑞": "恒瑞医药"},
+  "technology": {"类器官": "类器官模型"}
+}
+```
+
+别名映射到最终展示名，键在匹配时忽略空格、连字符、括号和大小写。文件缺失或格式错误时只使用内置词典，不影响生成与审核。
 
 ## 创建草稿
 

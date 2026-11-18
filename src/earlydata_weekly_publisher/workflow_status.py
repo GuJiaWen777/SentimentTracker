@@ -10,6 +10,7 @@ from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
 from .articles import filter_articles_by_window, read_articles
 from .brief import read_brief
+from .review_log import latest_quality, read_review_log
 
 
 ARTIFACTS = {
@@ -20,6 +21,7 @@ ARTIFACTS = {
     "generated_html": "wechat_article_img.html",
     "reviewed_html": "reviewed/wechat_article_img.html",
     "review_state": "review_state.json",
+    "review_log": "review_log.json",
     "publication_receipt": "publication_receipt.json",
     "run_manifest": "run.json",
 }
@@ -118,6 +120,18 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
     if brief is not None and not exists["articles"]:
         issues.append("articles.json is missing; generated content can be reviewed, but source evidence is unavailable")
 
+    review_summary: dict[str, Any] = {}
+    if exists["review_log"]:
+        log = read_review_log(root)
+        if log.get("error"):
+            issues.append(f"review_log.json is invalid: {log['error']}")
+        events = log.get("events") or []
+        review_summary = {
+            "event_count": len(events),
+            "last_event": str((events[-1] or {}).get("type") or "") if events else "",
+            "latest_quality": latest_quality(root),
+        }
+
     if exists["run_manifest"]:
         try:
             run = check_artifact("run", json.loads(paths["run_manifest"].read_text(encoding="utf-8")))
@@ -148,6 +162,7 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
                 "approved": approved,
                 "published": published,
             },
+            "review_log": review_summary,
             "artifacts": {
                 name: {"path": str(path), "exists": exists[name]}
                 for name, path in paths.items()

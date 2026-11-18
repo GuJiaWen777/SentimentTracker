@@ -95,6 +95,11 @@ def main() -> int:
     history_report.add_argument("--weeks", type=int, default=8)
     history_report.add_argument("--format", choices=("json", "text"), default="json")
 
+    review_log = commands.add_parser("review-log", help="Show the audit trail of saves, approvals and drafts.")
+    review_log.add_argument("--report-dir", required=True)
+    review_log.add_argument("--limit", type=int, default=20, help="Number of recent events to print in text mode.")
+    review_log.add_argument("--format", choices=("json", "text"), default="text")
+
     publish = commands.add_parser("publish", help="Upload the approved HTML to the WeChat draft box.")
     publish.add_argument("--report-dir", required=True, help="Approved report directory from the review workbench.")
     publish.add_argument("--title", default=None, help="Defaults to the approved brief title.")
@@ -175,6 +180,15 @@ def main() -> int:
         report_dir = Path(args.report_dir) if args.report_dir else discover_report_dir(Path("data/reports"), start=start, end=end)
         print(json.dumps(inspect_workflow_status(report_dir, start=start, end=end), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "review-log":
+        from .review_log import format_review_log, read_review_log
+
+        log = read_review_log(Path(args.report_dir))
+        if args.format == "text":
+            print(format_review_log(log, limit=args.limit))
+        else:
+            print(json.dumps(log, ensure_ascii=False, indent=2))
+        return 0
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
     from .approval import (
@@ -207,9 +221,26 @@ def main() -> int:
         update_media_id=update_media_id,
     )
     write_publication_receipt(artifact, media_id=media_id, title=title, updated=bool(update_media_id))
+    status = "draft_updated" if update_media_id else "draft_created"
+    try:
+        from .review_log import append_event
+
+        append_event(
+            artifact.report_dir,
+            {
+                "type": "publish",
+                "status": status,
+                "media_id": media_id,
+                "title": title,
+                "brief_sha256": artifact.brief_sha256,
+                "html_sha256": artifact.html_sha256,
+            },
+        )
+    except Exception as exc:  # The draft already exists; a log failure must not fail publish.
+        print(f"[review-log] {type(exc).__name__}: {exc}", file=sys.stderr)
     print(
         json.dumps(
-            {"media_id": media_id, "status": "draft_updated" if update_media_id else "draft_created"},
+            {"media_id": media_id, "status": status},
             ensure_ascii=False,
         )
     )
@@ -397,4 +428,12 @@ def _format_history(summary: dict) -> str:
     persistent = summary.get("persistent_entities") or []
     if persistent:
         lines.append("连续出现：" + "、".join(f"{entry['name']}（{entry['streak']} 期）" for entry in persistent[:10]))
+    quality = summary.get("quality_trend") or []
+    if quality:
+        lines.append(
+            "质量趋势："
+            + "、".join(
+                f"{item['window_end']} 错 {item['error_count']} / 警 {item['warning_count']}" for item in quality[-5:]
+            )
+        )
     return "\n".join(lines)

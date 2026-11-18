@@ -24,7 +24,8 @@ flowchart LR
 - **LLM 语义生成**：先对候选新闻批量语义排名，再生成关键信号、背景、CEO 业务影响、公司/技术标签与管理层启示。LLM 失败时不会静默退回规则模式。
 - **增量排名缓存**：按文章内容、模型名和排名提示词版本缓存结果。重复运行时只对新增或修改过的文章调用 LLM，命中情况写入 `generation.cache_hits` / `cache_misses`。
 - **候选池换稿**：综合阶段同时产出最多 6 条备选信号，审核台可直接换入，无需重新调用 LLM。
-- **跨周信号库**：批准时把本期信号、分类和重点实体写入本地 SQLite，支持连续出现、相对上期新增以及跨周数量趋势，并作为下一期选题与综合分析的参考上下文。
+- **跨周信号库**：批准时把本期信号、分类和重点实体写入本地 SQLite，支持连续出现、相对上期新增、跨周数量趋势与质量分数趋势，并作为下一期选题与综合分析的参考上下文。公司和技术名称按内置词典与本地别名词典归一化，同一实体的中英文写法会合并为一条连续记录。
+- **审核留痕**：每次保存、批准和发布都会追加到 `review_log.json`，记录字段修订、候选换稿、锁定字段与批准时的质量统计；`review-log` 命令可随时查看完整时间线。
 - **双数据源**：RedFox API 在线采集，或导入本地 P&B 格式 Excel；两条路径都会按报告日期窗口过滤。
 - **断点续跑**：自动识别原始数据、生成稿、审核稿、批准状态和发布回执，优先复用有效产物。
 - **并发保护**：同一报告目录的 `build` / `run` 互斥，重复启动会明确报错而不是互相覆盖；排名缓存写入会与并发结果合并。
@@ -129,6 +130,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `build` | 排名、生成 brief、Markdown 与 HTML | 默认是 |
 | `render` | 从已编辑的 `brief.json` 重新渲染，不调用模型 | 否 |
 | `review` | 启动本地审核工作台 | 否 |
+| `review-log` | 查看审核、批准与发布的时间线 | 否 |
 | `history record` | 把一份报告补录进跨周信号库 | 否 |
 | `history report` | 查看最近数期的信号数量与实体趋势 | 否 |
 | `publish` | 将已批准的 HTML 写入微信草稿箱 | 否 |
@@ -162,6 +164,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `brief.reviewed.json` | 人工保存后的结构化审核稿 |
 | `reviewed/wechat_article_img.html` | 审核稿对应的最终 HTML |
 | `review_state.json` | 字段锁定、批准状态、内容哈希与历史写入结果 |
+| `review_log.json` | 保存、批准与发布的时间线，含字段修改、候选换稿和质量统计 |
 | `publication_receipt.json` | 微信草稿 `media_id`、发布版本哈希与更新次数 |
 | `run.json` | 本次运行的后端、模型、提示词版本、用量、缓存与产物哈希 |
 
@@ -206,6 +209,7 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 | `REDFOX_API_KEY` | 使用 RedFox API 时必填 |
 | `EARLYDATA_RANKING_CACHE` | 排名缓存路径，默认 `data/cache/ranking.json` |
 | `EARLYDATA_HISTORY_DB` | 跨周历史库路径，默认 `data/history/signals.sqlite3` |
+| `EARLYDATA_ENTITY_ALIASES` | 自定义公司/技术别名词典，默认 `data/entities.json`，格式见运行手册 |
 | `EARLYDATA_WECHAT_CACHE` | 微信图片素材缓存，默认 `data/cache/wechat_media.json` |
 | `WECHAT_APP_ID` / `WECHAT_APP_SECRET` | 写入公众号草稿箱时必填 |
 | `WECHAT_AUTHOR` | 公众号文章作者，默认 `EARLY DATA` |
@@ -252,6 +256,7 @@ src/earlydata_weekly_publisher/
   render.py              Markdown / 公众号 HTML 渲染与合规校验
   theme.py               信号与语气配色 token
   text.py                日期、文本与字段归一化工具
+  entities.py            公司/技术别名词典与实体名称归一化
   io_utils.py            原子写 JSON 与文件哈希
   config.py              .env 加载
   locking.py             报告目录与缓存文件锁
@@ -261,6 +266,7 @@ src/earlydata_weekly_publisher/
   ranking_cache.py       增量排名缓存
   signal_history.py      跨周信号库与趋势
   review_app.py          本地审核工作台与 API
+  review_log.py          审核、批准与发布的审计时间线
   approval.py            审核哈希、批准状态与发布回执
   quality.py             内容质量检查
   workflow_status.py     可恢复状态机

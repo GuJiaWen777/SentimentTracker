@@ -36,6 +36,7 @@ flowchart LR
 - `render.py`：Markdown、公众号兼容 HTML 渲染与合规校验。
 - `theme.py`：信号分类与仪表盘语气的配色 token，规则渲染与 LLM 综合共用。
 - `text.py`：日期解析、文本压缩、字段归一化等无副作用工具。
+- `entities.py`：公司/技术别名词典（内置 + `EARLYDATA_ENTITY_ALIASES`）与实体名称归一化。
 - `io_utils.py`：文件哈希与原子写 JSON。
 - `config.py`：项目根目录 `.env` 加载。
 - `wechat.py`：微信草稿创建与更新、access token 缓存刷新、图片去重上传和网络重试。
@@ -43,7 +44,8 @@ flowchart LR
 - `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择、最多 6 条备选和所有板块的语义生成。
 - `ranking_cache.py`：按文章内容、模型和提示词版本索引的排名缓存，支持增量生成；保存时与磁盘现有条目合并，并发运行不会互相覆盖。
 - `locking.py`：报告目录 `build`/`run` 互斥锁与缓存写入锁；锁文件记录 pid、host 和创建时间，陈旧锁自动回收。
-- `signal_history.py`：SQLite 信号历史库，记录已批准报告的信号、分类和重点标签，并计算连续出现与跨周趋势。
+- `signal_history.py`：SQLite 信号历史库，记录已批准报告的信号、分类、重点标签和批准时质量统计，并计算连续出现、跨周趋势与质量趋势。
+- `review_log.py`：`review_log.json` 审计时间线；保存时记录字段修订与候选换稿，批准时记录质量统计，发布时记录草稿回执。
 - `artifacts.py`：持久化 JSON 的 `schema_version` 写入与兼容性校验；旧文件按 v0 读取，新版本文件明确拒绝。
 - `run_manifest.py`：把本次运行的后端、模型、提示词版本、用量、缓存、耗时和产物哈希写入 `run.json`。
 - `doctor.py`：检查 Python、`.env`、LLM 后端、各数据源可用性、数据目录、缓存/历史库和审核端口，不输出密钥。
@@ -81,14 +83,17 @@ HTML 视觉契约由 `render.py` 内置：白色主背景、浅灰边框、4 个
 
 `brief.json` 是编辑审阅接口，包含模型与候选数量、日期窗口、仪表盘、重点公司/机构、重点药物/技术类型、6 条重点信号、最多 6 条备选（`alternates`）、行动建议和来源。`items` 与 `alternates` 都带有 `article_id`、`score`、`category` 和 `reason`，审核台可以在两者之间换稿而不重新调用 LLM。
 
-所有报告与状态 JSON（`articles.json`、`brief.json`、`ranking.json`、`review_state.json`、`publication_receipt.json`、`run.json`）以及 `status`/`history report` 输出都带 `schema_version`；本地缓存另有独立的 `version` 字段，可随时重建。缺少版本号视为 v0 旧格式；高于当前支持的版本会被拒绝，并提示升级工具，而不是猜测字段含义。
+所有报告与状态 JSON（`articles.json`、`brief.json`、`ranking.json`、`review_state.json`、`review_log.json`、`publication_receipt.json`、`run.json`）以及 `status`/`history report` 输出都带 `schema_version`；本地缓存另有独立的 `version` 字段，可随时重建。缺少版本号视为 v0 旧格式；高于当前支持的版本会被拒绝，并提示升级工具，而不是猜测字段含义。
 
 `run.json` 是一次运行的审计记录：`status`、命令、时间窗口、耗时、git 提交、Python/平台、LLM 后端与模型、排名/综合提示词版本、token 用量、缓存命中、历史期数、产物相对路径与 SHA-256。生成失败时也会写出 `status=failed` 和错误类型/信息，便于事后排查。
 
 ## 增量生成与跨周历史
 
 - `data/cache/ranking.json` 按 `模型 + RANKING_PROMPT_VERSION + 文章内容/元数据` 生成缓存键。命中项直接复用分数、分类和理由；未命中项才进入分批排名。缓存写入失败只告警，不中断生成。
-- `data/history/signals.sqlite3` 以日期窗口为 `report_key`。审核批准时写入 `reports`、`signals` 和 `entities` 三张表；同一窗口重复批准是幂等覆盖。
+- `data/history/signals.sqlite3` 以日期窗口为 `report_key`。审核批准时写入 `reports`、`signals`、`entities` 和 `quality_samples` 四张表；同一窗口重复批准是幂等覆盖。
+- `entities` 与趋势读取都会经过 `entities.py` 归一化：内置词典覆盖常见中英文公司/技术写法，`EARLYDATA_ENTITY_ALIASES`（默认 `data/entities.json`）可追加或覆盖别名。归一化后的名称用于连续出现和新增标签计算，避免同一实体因写法不同而断开。
+- `quality_samples` 记录批准时的错误/警告数量与问题代码；`history report` 的 `quality_trend` 显示逐期变化。
+- `review_log.json` 是人工编辑的审计时间线：`save` 事件带字段级修改和候选换稿，`approve` 事件带质量统计，`publish` 事件带草稿 `media_id`。时间线最多保留最近 200 条事件，写入失败不会阻止保存、批准或发布。
 - `build`/`run` 默认读取窗口之前的历史，把连续出现实体和近期信号数量作为综合分析的只读上下文；`--no-history` 可以完全隔离。
 - `history report` 计算每个实体的连续出现期数（按已记录报告的窗口顺序）和本期相对上期的新增标签。
 

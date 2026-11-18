@@ -17,8 +17,9 @@ from .approval import approve_report
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
 from .brief import read_brief, validate_brief_data, write_rendered_outputs
-from .io_utils import write_json_atomic
+from .io_utils import sha256_file, write_json_atomic
 from .quality import build_review_context
+from .review_log import append_event, diff_briefs
 from .text import dedupe_strings
 
 
@@ -57,6 +58,7 @@ class ReviewWorkspace:
         }
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
+        previous_brief = self._current_brief()
         brief = stamp_artifact("brief", validate_brief_data(payload.get("brief")))
         brief.setdefault("alternates", [])
         brief["sources"] = list(
@@ -80,13 +82,38 @@ class ReviewWorkspace:
         write_json_atomic(self.state_path, state)
         outputs = write_rendered_outputs(brief, self.preview_dir)
         context = build_review_context(self.report_dir, brief)
-        return {
+        result = {
             "updated_at": updated_at,
             "locked_fields": locked_fields,
             "preview": str(outputs["html"]),
             "trends": self._trends(brief),
             **context,
         }
+        try:
+            append_event(
+                self.report_dir,
+                {
+                    "type": "save",
+                    "brief_sha256": sha256_file(self.reviewed_path),
+                    "changes": diff_briefs(previous_brief or {}, brief),
+                    "locked_fields": locked_fields,
+                },
+            )
+        except Exception as exc:  # The audit trail must never block editorial work.
+            result["review_log_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def _current_brief(self) -> dict[str, Any] | None:
+        for candidate in (self.reviewed_path, self.source_path):
+            if not candidate.is_file():
+                continue
+            try:
+                brief = read_brief(candidate)
+            except (OSError, ValueError):
+                continue
+            brief.setdefault("alternates", [])
+            return brief
+        return None
 
     def preview_path(self) -> Path:
         reviewed = self.preview_dir / "wechat_article_img.html"

@@ -85,6 +85,14 @@ Do not ask for a source and do not rerun the LLM. Open the review workbench.
 
 Continue from `brief.reviewed.json`. Do not overwrite it with `brief.json` or rerun generation unless the user explicitly requests a new model draft.
 
+When the user asks what changed during review, read `review_log.json` via:
+
+```powershell
+earlydata-weekly review-log --report-dir "{report_dir}"
+```
+
+Add `--format json` for field-level detail. The log is an audit trail; approval hashes remain the publishing gate.
+
 ### `approved`
 
 Report that the reviewed brief and HTML hashes are valid. Ask whether to publish this approved version to the WeChat draft box or reopen review.

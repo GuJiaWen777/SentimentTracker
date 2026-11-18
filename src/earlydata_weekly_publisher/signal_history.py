@@ -10,7 +10,9 @@ from typing import Any
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
 from .brief import read_brief
-from .text import unique_values
+from .entities import canonical_entity, load_aliases, normalize_entities
+from .quality import build_review_context
+from .review_log import latest_quality, summarize_quality
 
 
 DEFAULT_HISTORY_DB = Path("data/history/signals.sqlite3")
@@ -47,6 +49,13 @@ CREATE TABLE IF NOT EXISTS entities (
   kind TEXT NOT NULL,
   PRIMARY KEY (report_key, name, kind)
 );
+CREATE TABLE IF NOT EXISTS quality_samples (
+  report_key TEXT PRIMARY KEY,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  warning_count INTEGER NOT NULL DEFAULT 0,
+  codes TEXT NOT NULL DEFAULT '{}',
+  recorded_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_reports_window_end ON reports(window_end);
 CREATE INDEX IF NOT EXISTS idx_signals_report ON signals(report_key);
 CREATE INDEX IF NOT EXISTS idx_entities_report ON entities(report_key);
@@ -72,8 +81,15 @@ def record_report(report_dir: Path, *, db_path: Path | None = None) -> dict[str,
     target = Path(db_path) if db_path is not None else default_history_db()
     ranking = _ranking_map(root / "ranking.json")
     items = [item for item in brief.get("items", []) if isinstance(item, dict)]
-    companies = unique_values(str(value).strip() for value in brief.get("companies", []))
-    technologies = unique_values(str(value).strip() for value in brief.get("technologies", []))
+    aliases = load_aliases()
+    companies = normalize_entities(brief.get("companies") or [], "company", aliases=aliases)
+    technologies = normalize_entities(brief.get("technologies") or [], "technology", aliases=aliases)
+    quality = latest_quality(root)
+    if quality is None:
+        try:
+            quality = summarize_quality(build_review_context(root, brief)["quality"])
+        except Exception:  # Quality is advisory here; the report still belongs in history.
+            quality = summarize_quality({})
     generation = brief.get("generation") if isinstance(brief.get("generation"), dict) else {}
     updated_at = datetime.now(timezone.utc).isoformat()
 
@@ -129,6 +145,20 @@ def record_report(report_dir: Path, *, db_path: Path | None = None) -> dict[str,
                         "INSERT OR REPLACE INTO entities (report_key, name, kind) VALUES (?, ?, ?)",
                         (report_key, name, kind),
                     )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO quality_samples
+                  (report_key, error_count, warning_count, codes, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    report_key,
+                    int(quality["error_count"]),
+                    int(quality["warning_count"]),
+                    json.dumps(quality["codes"], ensure_ascii=False, sort_keys=True),
+                    updated_at,
+                ),
+            )
     finally:
         connection.close()
     return {
@@ -138,6 +168,7 @@ def record_report(report_dir: Path, *, db_path: Path | None = None) -> dict[str,
         "signal_count": len(items),
         "company_count": len(companies),
         "technology_count": len(technologies),
+        "quality": quality,
         "db": str(target),
     }
 
@@ -149,7 +180,7 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
         return _empty_summary()
     limit = max(1, min(int(weeks), MAX_WEEKS))
     try:
-        connection = sqlite3.connect(target, timeout=10)
+        connection = _connect(target)
         connection.row_factory = sqlite3.Row
         try:
             where = ""
@@ -179,6 +210,11 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
                 f"SELECT report_key, name, kind FROM entities WHERE report_key IN ({placeholders})",
                 keys,
             ).fetchall()
+            quality_rows = connection.execute(
+                f"SELECT report_key, error_count, warning_count, codes FROM quality_samples "
+                f"WHERE report_key IN ({placeholders})",
+                keys,
+            ).fetchall()
         finally:
             connection.close()
     except sqlite3.DatabaseError as exc:
@@ -190,12 +226,27 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
     category_counts: dict[str, dict[str, int]] = {key: {} for key in keys}
     for row in category_rows:
         category_counts[str(row["report_key"])][str(row["category"])] = int(row["count"])
-    week_entities: dict[str, list[dict[str, str]]] = {key: [] for key in keys}
+    aliases = load_aliases()
+    week_entities: dict[str, set[tuple[str, str]]] = {key: set() for key in keys}
     entity_weeks: dict[tuple[str, str], set[str]] = {}
     for row in entity_rows:
-        key, name, kind = str(row["report_key"]), str(row["name"]), str(row["kind"])
+        key, kind = str(row["report_key"]), str(row["kind"])
+        name = canonical_entity(str(row["name"]), kind, aliases=aliases)
+        if not name:
+            continue
         entity_weeks.setdefault((name, kind), set()).add(key)
-        week_entities[key].append({"name": name, "kind": kind})
+        week_entities[key].add((name, kind))
+    quality_by_key: dict[str, dict[str, Any]] = {}
+    for row in quality_rows:
+        try:
+            codes = json.loads(str(row["codes"] or "{}"))
+        except ValueError:
+            codes = {}
+        quality_by_key[str(row["report_key"])] = {
+            "error_count": int(row["error_count"]),
+            "warning_count": int(row["warning_count"]),
+            "codes": codes if isinstance(codes, dict) else {},
+        }
 
     entities: list[dict[str, Any]] = []
     for (name, kind), present in entity_weeks.items():
@@ -219,7 +270,11 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
                 "source_count": int(row["source_count"]),
                 "signal_counts": signal_counts.get(key, {}),
                 "category_counts": category_counts.get(key, {}),
-                "entities": sorted(week_entities.get(key, []), key=lambda entry: (entry["kind"], entry["name"])),
+                "entities": [
+                    {"name": name, "kind": kind}
+                    for name, kind in sorted(week_entities.get(key, set()), key=lambda entry: (entry[1], entry[0]))
+                ],
+                "quality": quality_by_key.get(key),
             }
         )
     return stamp_artifact(
@@ -229,6 +284,16 @@ def trend_summary(db_path: Path | None = None, *, until: date | None = None, wee
             "weeks": weeks_out,
             "entities": entities[:30],
             "persistent_entities": [entry for entry in entities if entry["streak"] >= 2][:20],
+            "quality_trend": [
+                {
+                    "report_key": week["report_key"],
+                    "window_end": week["window_end"],
+                    "error_count": week["quality"]["error_count"],
+                    "warning_count": week["quality"]["warning_count"],
+                }
+                for week in weeks_out
+                if week["quality"]
+            ],
         },
     )
 
@@ -243,14 +308,12 @@ def trend_context_for_report(db_path: Path | None, brief: dict[str, Any], *, wee
     start = date.fromisoformat(str(brief["window_start"]))
     summary = trend_context_for_window(db_path, start, weeks=weeks)
     current = [
-        {"name": str(value).strip(), "kind": "company"}
-        for value in brief.get("companies", [])
-        if str(value).strip()
+        {"name": name, "kind": "company"}
+        for name in normalize_entities(brief.get("companies") or [], "company")
     ]
     current.extend(
-        {"name": str(value).strip(), "kind": "technology"}
-        for value in brief.get("technologies", [])
-        if str(value).strip()
+        {"name": name, "kind": "technology"}
+        for name in normalize_entities(brief.get("technologies") or [], "technology")
     )
     current_keys = {(entry["name"], entry["kind"]) for entry in current}
     weeks_data = summary.get("weeks") or []
@@ -283,6 +346,7 @@ def _empty_summary(error: str = "") -> dict[str, Any]:
             "weeks": [],
             "entities": [],
             "persistent_entities": [],
+            "quality_trend": [],
             "current_entities": [],
             "new_entities": [],
             "continuing_entities": [],

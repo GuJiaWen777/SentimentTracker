@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from .entities import normalize_entities
 from .models import Article
-from .text import compact_text, strip_html, unique_values
+from .text import compact_text, strip_html
 from .theme import SIGNAL_COLORS
 
 
@@ -100,7 +101,7 @@ def company_tags(articles: list[Article]) -> list[str]:
             if re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", title_and_tags, re.I)
         )
         found.extend(title_organizations(title_and_tags))
-    return unique_values(clean_entity(tag) for tag in found if is_entity_tag(tag))[:5]
+    return normalize_entities((clean_entity(tag) for tag in found if is_entity_tag(tag)), "company")[:5]
 
 
 def technology_tags(articles: list[Article]) -> list[str]:

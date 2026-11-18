@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Protocol
 
+from .entities import normalize_entities
 from .llm_client import create_llm_client
 from .prompts import (
     RANKING_PROMPT_VERSION,
@@ -180,8 +181,8 @@ def build_semantic_brief(
         "source_count": len(articles),
         "key_signal": _required_text(synthesis, "key_signal"),
         "dashboard": dashboard,
-        "companies": _text_list(synthesis, "companies", maximum=5),
-        "technologies": _text_list(synthesis, "technologies", maximum=5),
+        "companies": normalize_entities(_text_list(synthesis, "companies", maximum=5), "company"),
+        "technologies": normalize_entities(_text_list(synthesis, "technologies", maximum=5), "technology"),
         "items": items,
         "alternates": alternate_items,
         "insights": _text_list(synthesis, "insights", exact=3),
