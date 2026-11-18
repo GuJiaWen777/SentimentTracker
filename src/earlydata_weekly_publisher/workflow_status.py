@@ -8,7 +8,8 @@ from typing import Any
 from .approval import load_approved_artifact, matching_publication_receipt
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
-from .pipeline import filter_articles_by_window, read_articles, read_brief
+from .articles import filter_articles_by_window, read_articles
+from .brief import read_brief
 
 
 ARTIFACTS = {

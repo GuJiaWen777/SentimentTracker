@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .pipeline import read_articles
+from .articles import read_articles
 
 
 NUMBER = re.compile(r"\d+(?:\.\d+)?(?:万|亿)?(?:美元|元|%|％)?")

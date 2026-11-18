@@ -16,7 +16,7 @@ from urllib.parse import urlparse, urlsplit
 from .approval import approve_report
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
-from .pipeline import read_brief, validate_brief_data, write_rendered_outputs
+from .brief import read_brief, validate_brief_data, write_rendered_outputs
 from .quality import build_review_context
 
 

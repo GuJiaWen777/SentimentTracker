@@ -9,7 +9,7 @@ from typing import Any
 
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
-from .pipeline import read_brief
+from .brief import read_brief
 
 
 DEFAULT_HISTORY_DB = Path("data/history/signals.sqlite3")

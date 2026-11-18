@@ -9,7 +9,7 @@ from typing import Any
 
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
-from .pipeline import read_brief, write_rendered_outputs
+from .brief import read_brief, write_rendered_outputs
 from .quality import build_review_context
 
 

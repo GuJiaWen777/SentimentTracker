@@ -28,7 +28,15 @@ flowchart LR
 
 核心模块：
 
-- `pipeline.py`：数据采集、Excel 归一化、规则备用模式、Markdown/HTML 渲染和合规校验。
+- `models.py`：`Article` 数据模型与稳定 `article_id` 分配。
+- `articles.py`：日期窗口校验、窗口过滤和 `articles.json` 读写。
+- `sources/redfox.py`、`sources/pb_xlsx.py`：RedFox API 与 P&B Excel 两个采集适配器。
+- `heuristics.py`：规则模式的相关性评分、信号分类、重点实体与技术标签提取。
+- `brief.py`：brief 组装、LLM/规则模式分发、`brief.json` 与渲染产物写入。
+- `render.py`：Markdown、公众号兼容 HTML 渲染与合规校验。
+- `text.py`：日期解析、文本压缩、字段归一化等无副作用工具。
+- `config.py`：项目根目录 `.env` 加载。
+- `pipeline.py`：向后兼容门面，只做再导出，不再承载实现。
 - `wechat.py`：微信草稿创建与更新、access token 缓存刷新、图片去重上传和网络重试。
 - `llm_client.py`：OpenAI-compatible API、Claude CLI、Codex CLI 三种结构化 LLM 传输，并累计 token/费用用量。
 - `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择、最多 6 条备选和所有板块的语义生成。

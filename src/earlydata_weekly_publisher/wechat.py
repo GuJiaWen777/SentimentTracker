@@ -53,7 +53,7 @@ def publish_draft(
     update_media_id: str | None = None,
 ) -> str:
     """Create a WeChat draft, or update ``update_media_id`` when provided."""
-    from .pipeline import validate_html
+    from .render import validate_html
 
     html = Path(html_path).read_text(encoding="utf-8")
     validate_html(html)

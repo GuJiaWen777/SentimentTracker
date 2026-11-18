@@ -135,7 +135,7 @@ def build_semantic_brief(
         raise ValueError("No articles available for the selected window.")
     started = time.monotonic()
     llm = client or create_llm_client(backend)
-    from .pipeline import ensure_article_ids
+    from .models import ensure_article_ids
 
     article_map = {article.article_id: article for article in ensure_article_ids(articles)}
     cache = (

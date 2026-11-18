@@ -243,7 +243,15 @@ pytest -q
 
 ```text
 src/earlydata_weekly_publisher/
-  pipeline.py            数据采集、窗口过滤、brief 与 Markdown/HTML 渲染
+  cli.py                 命令行入口
+  models.py              Article 数据模型与稳定 article_id
+  articles.py            日期窗口与 articles.json 读写
+  sources/               RedFox API 与 P&B Excel 采集适配器
+  heuristics.py          规则模式评分、信号分类与实体/技术提取
+  brief.py               brief 组装、模式分发与产物写入
+  render.py              Markdown / 公众号 HTML 渲染与合规校验
+  text.py                日期、文本与字段归一化工具
+  config.py              .env 加载
   semantic_generation.py LLM 排名与综合分析
   llm_client.py          API / Claude CLI / Codex CLI 传输层与用量统计
   wechat.py              微信草稿创建/更新、token 刷新、图片去重上传
@@ -256,7 +264,7 @@ src/earlydata_weekly_publisher/
   doctor.py              环境与配置自检
   artifacts.py           制品 schema_version 校验
   run_manifest.py        运行清单 run.json
-  cli.py                 命令行入口
+  pipeline.py            旧导入路径的兼容门面
 tests/                   pytest 测试
 docs/                    架构、内容规则、运行手册与 ADR
 ```

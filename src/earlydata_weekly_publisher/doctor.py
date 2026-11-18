@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import stamp as stamp_artifact
-from .pipeline import load_dotenv
+from .config import load_dotenv
 from .ranking_cache import DEFAULT_RANKING_CACHE
 from .signal_history import default_history_db
 
