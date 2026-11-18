@@ -79,6 +79,17 @@ def cell_value(row: tuple[Any, ...], index: int) -> Any:
     return row[index - 1] if len(row) >= index else None
 
 
+def excerpt(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(value or ""))).strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def dedupe_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+
 def unique_values(values: Any) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []

@@ -186,7 +186,6 @@ earlydata-weekly build ... --no-ranking-cache --no-history
 - 同一批准版本已有有效回执时，发布命令直接返回原 `media_id`；只有明确需要新草稿时才使用 `--force-new-draft`。
 - 报告重新审核批准后，`publish --update-draft` 会更新回执中的原草稿，而不是再创建一条重复草稿。
 - 微信 access token 在进程内缓存并自动刷新；网络错误、限流和 token 失效会指数退避重试；封面和文章图片按内容哈希去重上传。
-- 旧流程迁移可使用 `publish --file ... --allow-unreviewed`，但该路径仍要求 `--title` 与 `--confirm`。
 
 ## 配置
 
@@ -251,7 +250,9 @@ src/earlydata_weekly_publisher/
   heuristics.py          规则模式评分、信号分类与实体/技术提取
   brief.py               brief 组装、模式分发与产物写入
   render.py              Markdown / 公众号 HTML 渲染与合规校验
+  theme.py               信号与语气配色 token
   text.py                日期、文本与字段归一化工具
+  io_utils.py            原子写 JSON 与文件哈希
   config.py              .env 加载
   locking.py             报告目录与缓存文件锁
   semantic_generation.py LLM 排名与综合分析
@@ -268,7 +269,7 @@ src/earlydata_weekly_publisher/
   run_manifest.py        运行清单 run.json
   pipeline.py            旧导入路径的兼容门面
 tests/                   pytest 测试
-docs/                    架构、内容规则、运行手册与 ADR
+docs/                    架构、内容规则与运行手册
 ```
 
 项目保持“小核心”边界：采集、LLM 语义生成、合规 HTML、人工审核与微信草稿交付。通用舆情平台、前端门户和群发运营不在此仓库范围内。

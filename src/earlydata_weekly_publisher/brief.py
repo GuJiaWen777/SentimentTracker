@@ -20,6 +20,7 @@ from .heuristics import (
 from .models import Article, ensure_article_ids
 from .render import render_html, render_markdown, validate_html
 from .text import compact_text
+from .theme import NEUTRAL_COLOR, TONE_COLORS
 
 
 def read_brief(path: Path) -> dict[str, Any]:
@@ -82,10 +83,10 @@ def build_brief(articles: list[Article], start: date, end: date, title: str | No
         "source_count": len(articles),
         "key_signal": summary,
         "dashboard": [
-            ["监管动向", f"{risk_count} 条", "#A32D2D" if risk_count else "#1C1F26"],
-            ["AI 落地", f"{ai_count} 条", "#3B6D11" if ai_count else "#1C1F26"],
-            ["市场并购", f"{deal_count} 条", "#2B72B8" if deal_count else "#1C1F26"],
-            ["本周信号数", f"{len(selected)} 条", "#1C1F26"],
+            ["监管动向", f"{risk_count} 条", TONE_COLORS["risk"] if risk_count else NEUTRAL_COLOR],
+            ["AI 落地", f"{ai_count} 条", TONE_COLORS["positive"] if ai_count else NEUTRAL_COLOR],
+            ["市场并购", f"{deal_count} 条", TONE_COLORS["info"] if deal_count else NEUTRAL_COLOR],
+            ["本周信号数", f"{len(selected)} 条", NEUTRAL_COLOR],
         ],
         "companies": companies,
         "technologies": technologies,

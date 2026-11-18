@@ -5,6 +5,7 @@ from collections import Counter
 
 from .models import Article
 from .text import compact_text, strip_html, unique_values
+from .theme import SIGNAL_COLORS
 
 
 PHARMA_TYPES = {
@@ -59,22 +60,22 @@ def signal_style(article: Article) -> tuple[str, str, str]:
     headline = " ".join([article.title, " ".join(article.tags or [])])
     text = article_text(article)
     if any(word in headline for word in ("合作", "授权", "并购", "交易", "竞品", "商业化", "BD", "融资")):
-        return "竞争", "#FEF3E2", "#854F0B"
+        return "竞争", *SIGNAL_COLORS["竞争"]
     if any(word in headline for word in ("政策", "法案", "医保", "支付", "准入")):
-        return "政策", "#EEF5FC", "#2B72B8"
+        return "政策", *SIGNAL_COLORS["政策"]
     if any(word in headline for word in ("监管", "合规", "审评", "FDA", "警告信", "GMP", "获批", "批准", "申报")):
-        return "监管", "#FCEAEA", "#A32D2D"
+        return "监管", *SIGNAL_COLORS["监管"]
     if "出海" in headline:
-        return "竞争", "#FEF3E2", "#854F0B"
+        return "竞争", *SIGNAL_COLORS["竞争"]
     if "AI" in headline or "人工智能" in headline:
-        return "机会", "#EDF6E3", "#3B6D11"
+        return "机会", *SIGNAL_COLORS["机会"]
     if any(word in text for word in ("监管", "合规", "审评", "FDA", "警告信", "GMP")):
-        return "监管", "#FCEAEA", "#A32D2D"
+        return "监管", *SIGNAL_COLORS["监管"]
     if any(word in text for word in ("政策", "法案", "医保", "支付", "准入")):
-        return "政策", "#EEF5FC", "#2B72B8"
+        return "政策", *SIGNAL_COLORS["政策"]
     if any(word in text for word in ("合作", "授权", "并购", "交易", "竞品", "商业化")):
-        return "竞争", "#FEF3E2", "#854F0B"
-    return "机会", "#EDF6E3", "#3B6D11"
+        return "竞争", *SIGNAL_COLORS["竞争"]
+    return "机会", *SIGNAL_COLORS["机会"]
 
 
 def so_what(article: Article) -> str:

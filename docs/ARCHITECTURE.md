@@ -34,7 +34,9 @@ flowchart LR
 - `heuristics.py`：规则模式的相关性评分、信号分类、重点实体与技术标签提取。
 - `brief.py`：brief 组装、LLM/规则模式分发、`brief.json` 与渲染产物写入。
 - `render.py`：Markdown、公众号兼容 HTML 渲染与合规校验。
+- `theme.py`：信号分类与仪表盘语气的配色 token，规则渲染与 LLM 综合共用。
 - `text.py`：日期解析、文本压缩、字段归一化等无副作用工具。
+- `io_utils.py`：文件哈希与原子写 JSON。
 - `config.py`：项目根目录 `.env` 加载。
 - `pipeline.py`：向后兼容门面，只做再导出，不再承载实现。
 - `wechat.py`：微信草稿创建与更新、access token 缓存刷新、图片去重上传和网络重试。
@@ -49,7 +51,7 @@ flowchart LR
 - `prompts.py`：CEO 受众的排名标尺、事实约束、历史趋势上下文和整期分析提示词。
 - `cli.py`：参数、日期窗口、LLM 后端选择、缓存与历史配置、运行清单和发布门禁。
 
-HTML 视觉契约基于 `theme-earlydata-signal.html`：白色主背景、浅灰边框、4 个数据卡、关键信号、标签块、新闻条目与底部来源。渲染代码内置这一契约，因此运行项目不依赖本机 Codex skill 目录。
+HTML 视觉契约由 `render.py` 内置：白色主背景、浅灰边框、4 个数据卡、关键信号、标签块、新闻条目与底部来源。规则渲染与 LLM 综合共用 `theme.py` 中的信号与语气配色 token，因此两条生成路径不会出现颜色漂移。
 
 ## 数据契约
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import platform
 import subprocess
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import stamp as stamp_artifact
+from .io_utils import sha256_file
 from .prompts import RANKING_PROMPT_VERSION, SYNTHESIS_PROMPT_VERSION
 
 
@@ -140,7 +140,7 @@ class RunManifest:
                 artifacts[path.name] = {
                     "path": path.name,
                     "bytes": path.stat().st_size,
-                    "sha256": _sha256(path),
+                    "sha256": sha256_file(path),
                 }
             except OSError:
                 continue
@@ -155,14 +155,6 @@ class RunManifest:
             temporary.replace(path)
         except (OSError, TypeError, ValueError):
             pass
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _git_info() -> dict[str, Any]:

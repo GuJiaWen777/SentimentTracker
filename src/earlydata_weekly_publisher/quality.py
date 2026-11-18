@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .articles import read_articles
+from .text import excerpt as excerpt_text
 
 
 NUMBER = re.compile(r"\d+(?:\.\d+)?(?:万|亿)?(?:美元|元|%|％)?")
@@ -26,7 +27,7 @@ def build_review_context(report_dir: Path, brief: dict[str, Any]) -> dict[str, A
         excerpt = ""
         if article is not None:
             source_text = " ".join([article.title, article.summary, article.content])
-            excerpt = _excerpt(article.summary or article.content, 1400)
+            excerpt = excerpt_text(article.summary or article.content, 1400)
         evidence[article_id] = {
             "article_id": article_id,
             "score": ranking.get("score"),
@@ -114,11 +115,6 @@ def _article_by_id(path: Path) -> dict[str, Any]:
 def _numbers(text: str) -> list[str]:
     ignored = {"1", "2", "3", "4", "5", "6"}
     return list(dict.fromkeys(token for token in NUMBER.findall(text) if token not in ignored))
-
-
-def _excerpt(value: str, limit: int) -> str:
-    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(value or ""))).strip()
-    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def _issue(level: str, code: str, message: str, path: str, article_id: str) -> dict[str, str]:

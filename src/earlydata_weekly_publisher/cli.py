@@ -95,17 +95,14 @@ def main() -> int:
     history_report.add_argument("--weeks", type=int, default=8)
     history_report.add_argument("--format", choices=("json", "text"), default="json")
 
-    publish = commands.add_parser("publish", help="Upload confirmed HTML to the WeChat draft box.")
-    publish_input = publish.add_mutually_exclusive_group(required=True)
-    publish_input.add_argument("--report-dir", help="Approved report directory from the review workbench.")
-    publish_input.add_argument("--file", help="Validated HTML path for explicit legacy publishing.")
-    publish.add_argument("--title", default=None, help="Defaults to the approved brief title with --report-dir.")
+    publish = commands.add_parser("publish", help="Upload the approved HTML to the WeChat draft box.")
+    publish.add_argument("--report-dir", required=True, help="Approved report directory from the review workbench.")
+    publish.add_argument("--title", default=None, help="Defaults to the approved brief title.")
     publish.add_argument("--cover", default=DEFAULT_COVER)
     publish.add_argument("--author", default=None)
     publish.add_argument("--digest", default="")
     publish.add_argument("--source-url", default="")
     publish.add_argument("--confirm", action="store_true", help="Required acknowledgement before draft creation.")
-    publish.add_argument("--allow-unreviewed", action="store_true", help="Required with --file to bypass the review gate.")
     draft_mode = publish.add_mutually_exclusive_group()
     draft_mode.add_argument("--force-new-draft", action="store_true", help="Create another draft even when this approved version has a receipt.")
     draft_mode.add_argument("--update-draft", action="store_true", help="Update the existing receipt draft after re-approval.")
@@ -180,40 +177,28 @@ def main() -> int:
         return 0
     if not args.confirm:
         parser.error("publish requires --confirm; this writes to the WeChat draft box.")
-    artifact = None
-    update_media_id: str | None = None
-    if args.report_dir:
-        from .approval import (
-            load_approved_artifact,
-            matching_publication_receipt,
-            read_publication_receipt,
-            write_publication_receipt,
-        )
+    from .approval import (
+        load_approved_artifact,
+        matching_publication_receipt,
+        read_publication_receipt,
+        write_publication_receipt,
+    )
 
-        artifact = load_approved_artifact(Path(args.report_dir))
-        receipt = matching_publication_receipt(artifact)
-        if receipt and not args.force_new_draft:
-            print(json.dumps({**receipt, "status": "draft_already_created"}, ensure_ascii=False))
-            return 0
-        if args.update_draft:
-            previous = read_publication_receipt(artifact.report_dir)
-            update_media_id = str(previous.get("media_id") or "")
-            if not update_media_id:
-                parser.error("--update-draft requires an existing publication_receipt.json.")
-        html_path = artifact.html_path
-        title = args.title or artifact.title
-    else:
-        if args.update_draft:
-            parser.error("--update-draft requires --report-dir.")
-        if not args.allow_unreviewed:
-            parser.error("publish --file requires --allow-unreviewed; prefer --report-dir for reviewed publishing.")
-        if not args.title:
-            parser.error("publish --file requires --title.")
-        html_path = Path(args.file)
-        title = args.title
+    artifact = load_approved_artifact(Path(args.report_dir))
+    receipt = matching_publication_receipt(artifact)
+    if receipt and not args.force_new_draft:
+        print(json.dumps({**receipt, "status": "draft_already_created"}, ensure_ascii=False))
+        return 0
+    update_media_id: str | None = None
+    if args.update_draft:
+        previous = read_publication_receipt(artifact.report_dir)
+        update_media_id = str(previous.get("media_id") or "")
+        if not update_media_id:
+            parser.error("--update-draft requires an existing publication_receipt.json.")
+    title = args.title or artifact.title
     author = args.author or os.environ.get("WECHAT_AUTHOR", "EARLY DATA")
     media_id = publish_draft(
-        html_path,
+        artifact.html_path,
         title=title,
         cover=args.cover,
         author=author,
@@ -221,8 +206,7 @@ def main() -> int:
         source_url=args.source_url,
         update_media_id=update_media_id,
     )
-    if artifact is not None:
-        write_publication_receipt(artifact, media_id=media_id, title=title, updated=bool(update_media_id))
+    write_publication_receipt(artifact, media_id=media_id, title=title, updated=bool(update_media_id))
     print(
         json.dumps(
             {"media_id": media_id, "status": "draft_updated" if update_media_id else "draft_created"},

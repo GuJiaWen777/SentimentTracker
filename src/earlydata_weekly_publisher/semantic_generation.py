@@ -18,6 +18,8 @@ from .prompts import (
     synthesis_prompt,
 )
 from .ranking_cache import RankingCache
+from .text import excerpt as excerpt_text
+from .theme import NEUTRAL_COLOR, SIGNAL_COLORS, TONE_COLORS
 
 
 RANKING_SCHEMA: dict[str, Any] = {
@@ -323,7 +325,7 @@ def _ranking_row(article_id: str, article: Any) -> dict[str, Any]:
             "share": article.share_count,
             "recommend": article.recommend_count,
         },
-        "excerpt": _excerpt(article.summary or article.content, 260),
+        "excerpt": excerpt_text(article.summary or article.content, 260),
     }
 
 
@@ -338,7 +340,7 @@ def _synthesis_row(ranking: dict[str, Any], article: Any) -> dict[str, Any]:
             "share": article.share_count,
             "recommend": article.recommend_count,
         },
-        "evidence_excerpt": _excerpt(article.summary or article.content, 1200),
+        "evidence_excerpt": excerpt_text(article.summary or article.content, 1200),
     }
 
 
@@ -402,7 +404,6 @@ def _dashboard(value: Any, signal_count: int) -> list[list[str]]:
     if not isinstance(value, list) or len(value) != 3:
         raise RuntimeError("LLM synthesis dashboard must contain exactly three analyses.")
     expected = ["监管动向", "AI 落地", "市场并购"]
-    tones = {"risk": "#A32D2D", "positive": "#3B6D11", "info": "#2B72B8", "neutral": "#1C1F26"}
     by_label = {str(item.get("label")): item for item in value if isinstance(item, dict)}
     if set(by_label) != set(expected):
         raise RuntimeError("LLM synthesis dashboard labels are incomplete.")
@@ -410,20 +411,15 @@ def _dashboard(value: Any, signal_count: int) -> list[list[str]]:
     for label in expected:
         item = by_label[label]
         tone = str(item.get("tone") or "")
-        if tone not in tones:
+        if tone not in TONE_COLORS:
             raise RuntimeError(f"LLM synthesis dashboard has invalid tone {tone!r}.")
-        rows.append([label, _required_text(item, "value"), tones[tone]])
-    rows.append(["本周信号数", f"{signal_count} 条", "#1C1F26"])
+        rows.append([label, _required_text(item, "value"), TONE_COLORS[tone]])
+    rows.append(["本周信号数", f"{signal_count} 条", NEUTRAL_COLOR])
     return rows
 
 
 def _signal_colors(signal: str) -> tuple[str, str]:
-    return {
-        "监管": ("#FCEAEA", "#A32D2D"),
-        "政策": ("#EEF5FC", "#2B72B8"),
-        "竞争": ("#FEF3E2", "#854F0B"),
-        "机会": ("#EDF6E3", "#3B6D11"),
-    }[signal]
+    return SIGNAL_COLORS[signal]
 
 
 def _required_text(value: dict[str, Any], key: str) -> str:
@@ -453,11 +449,6 @@ def _dedupe_rankings(rankings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         result.append(ranking)
     return result
-
-
-def _excerpt(value: str, limit: int) -> str:
-    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(value or ""))).strip()
-    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:

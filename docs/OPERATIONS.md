@@ -123,7 +123,7 @@ earlydata-weekly publish --report-dir data\reports\20260525_20260531 --update-dr
 
 该命令要求回执中已有 `media_id`；仅在内容哈希变化时执行。微信 access token 会缓存并按 `expires_in` 刷新，网络错误、限流和 token 失效会指数退避重试；封面和文章图片按内容哈希去重上传。
 
-只有迁移旧流程时才使用 `publish --file ... --allow-unreviewed`；该路径仍要求 `--title` 和 `--confirm`，但不会生成审核回执。为防止本地文件被带出，HTML 中 `<img src="...">` 的本地路径必须位于该 HTML 所在目录内；`--cover` 显式传入的本地图片路径不受此限制。
+HTML 中引用的本地图片必须位于报告目录内；显式 `--cover` 传入的本地图片路径不受此限制。
 
 ## 常见故障
 

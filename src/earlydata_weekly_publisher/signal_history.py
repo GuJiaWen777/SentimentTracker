@@ -10,6 +10,7 @@ from typing import Any
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
 from .brief import read_brief
+from .text import unique_values
 
 
 DEFAULT_HISTORY_DB = Path("data/history/signals.sqlite3")
@@ -71,8 +72,8 @@ def record_report(report_dir: Path, *, db_path: Path | None = None) -> dict[str,
     target = Path(db_path) if db_path is not None else default_history_db()
     ranking = _ranking_map(root / "ranking.json")
     items = [item for item in brief.get("items", []) if isinstance(item, dict)]
-    companies = _unique(str(value).strip() for value in brief.get("companies", []))
-    technologies = _unique(str(value).strip() for value in brief.get("technologies", []))
+    companies = unique_values(str(value).strip() for value in brief.get("companies", []))
+    technologies = unique_values(str(value).strip() for value in brief.get("technologies", []))
     generation = brief.get("generation") if isinstance(brief.get("generation"), dict) else {}
     updated_at = datetime.now(timezone.utc).isoformat()
 
@@ -316,6 +317,3 @@ def _ranking_map(path: Path) -> dict[str, dict[str, Any]]:
         if isinstance(row, dict) and row.get("article_id")
     }
 
-
-def _unique(values: Any) -> list[str]:
-    return list(dict.fromkeys(value for value in values if value))

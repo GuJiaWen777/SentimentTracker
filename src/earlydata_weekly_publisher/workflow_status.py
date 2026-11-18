@@ -145,7 +145,6 @@ def inspect_workflow_status(report_dir: Path, *, start: date | None = None, end:
                 "reviewed_report": exists["reviewed_brief"] and exists["reviewed_html"],
             },
             "gates": {
-                "can_review": brief is not None and (exists["generated_html"] or exists["reviewed_html"]),
                 "approved": approved,
                 "published": published,
             },

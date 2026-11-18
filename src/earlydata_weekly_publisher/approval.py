@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,7 +9,9 @@ from typing import Any
 from .artifacts import check as check_artifact
 from .artifacts import stamp as stamp_artifact
 from .brief import read_brief, write_rendered_outputs
+from .io_utils import sha256_file, write_json_atomic
 from .quality import build_review_context
+from .text import dedupe_strings
 
 
 @dataclass(frozen=True)
@@ -42,13 +43,12 @@ def approve_report(report_dir: Path, *, history_db: Path | None = None) -> dict[
             "status": "approved",
             "updated_at": approved_at,
             "approved_at": approved_at,
-            "locked_fields": _string_list(previous.get("locked_fields")),
-            "brief_sha256": _sha256(brief_path),
-            "html_sha256": _sha256(html_path),
-            "quality_warning_count": quality["warning_count"],
+            "locked_fields": dedupe_strings(previous.get("locked_fields")),
+            "brief_sha256": sha256_file(brief_path),
+            "html_sha256": sha256_file(html_path),
         },
     )
-    _write_json_atomic(state_path, state)
+    write_json_atomic(state_path, state)
     if history_db is not None:
         from .signal_history import record_report
 
@@ -56,7 +56,7 @@ def approve_report(report_dir: Path, *, history_db: Path | None = None) -> dict[
             state["history"] = record_report(root, db_path=history_db)
         except Exception as exc:  # History is advisory; never block editorial approval.
             state["history_error"] = f"{type(exc).__name__}: {exc}"
-        _write_json_atomic(state_path, state)
+        write_json_atomic(state_path, state)
     return state
 
 
@@ -69,7 +69,7 @@ def load_approved_artifact(report_dir: Path) -> ApprovedArtifact:
         raise ValueError("Report must be approved in the review workbench before publishing.")
     if not brief_path.is_file() or not html_path.is_file():
         raise ValueError("Approved brief or HTML artifact is missing.")
-    brief_sha256, html_sha256 = _sha256(brief_path), _sha256(html_path)
+    brief_sha256, html_sha256 = sha256_file(brief_path), sha256_file(html_path)
     if brief_sha256 != state.get("brief_sha256") or html_sha256 != state.get("html_sha256"):
         raise ValueError("Approved artifacts changed after approval; review and approve them again.")
     brief = read_brief(brief_path)
@@ -121,12 +121,8 @@ def write_publication_receipt(
             "update_count": update_count + (1 if updated else 0),
         },
     )
-    _write_json_atomic(path, payload)
+    write_json_atomic(path, payload)
     return path
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _read_json(path: Path, *, kind: str | None = None) -> dict[str, Any]:
@@ -139,15 +135,3 @@ def _read_json(path: Path, *, kind: str | None = None) -> dict[str, Any]:
         check_artifact(kind, value)
     return value
 
-
-def _write_json_atomic(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
