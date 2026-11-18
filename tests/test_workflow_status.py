@@ -2,7 +2,9 @@ import json
 from datetime import date
 
 from earlydata_weekly_publisher.approval import approve_report, load_approved_artifact, write_publication_receipt
-from earlydata_weekly_publisher.pipeline import Article, build_brief, write_articles, write_brief_outputs
+from earlydata_weekly_publisher.articles import write_articles
+from earlydata_weekly_publisher.brief import build_brief, write_brief_outputs
+from earlydata_weekly_publisher.models import Article
 from earlydata_weekly_publisher.review_app import ReviewWorkspace
 from earlydata_weekly_publisher.workflow_status import discover_report_dir, inspect_workflow_status
 

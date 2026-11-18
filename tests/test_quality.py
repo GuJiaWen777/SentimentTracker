@@ -1,7 +1,9 @@
 import json
 from datetime import date
 
-from earlydata_weekly_publisher.pipeline import Article, build_brief, write_articles
+from earlydata_weekly_publisher.articles import write_articles
+from earlydata_weekly_publisher.brief import build_brief
+from earlydata_weekly_publisher.models import Article
 from earlydata_weekly_publisher.quality import build_review_context
 
 

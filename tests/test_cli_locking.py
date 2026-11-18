@@ -1,8 +1,9 @@
 import sys
 
+from earlydata_weekly_publisher.articles import write_articles
 from earlydata_weekly_publisher.cli import main
 from earlydata_weekly_publisher.locking import report_lock
-from earlydata_weekly_publisher.pipeline import Article, write_articles
+from earlydata_weekly_publisher.models import Article
 
 
 def _build_argv(tmp_path):

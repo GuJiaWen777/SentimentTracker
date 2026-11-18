@@ -38,7 +38,6 @@ flowchart LR
 - `text.py`：日期解析、文本压缩、字段归一化等无副作用工具。
 - `io_utils.py`：文件哈希与原子写 JSON。
 - `config.py`：项目根目录 `.env` 加载。
-- `pipeline.py`：向后兼容门面，只做再导出，不再承载实现。
 - `wechat.py`：微信草稿创建与更新、access token 缓存刷新、图片去重上传和网络重试。
 - `llm_client.py`：OpenAI-compatible API、Claude CLI、Codex CLI 三种结构化 LLM 传输，并累计 token/费用用量。
 - `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择、最多 6 条备选和所有板块的语义生成。

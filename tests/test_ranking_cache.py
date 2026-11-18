@@ -1,7 +1,8 @@
 import json
 from datetime import date
 
-from earlydata_weekly_publisher.pipeline import Article, generate_brief
+from earlydata_weekly_publisher.brief import generate_brief
+from earlydata_weekly_publisher.models import Article
 
 
 class FakeLLM:

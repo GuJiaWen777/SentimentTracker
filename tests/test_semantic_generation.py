@@ -3,7 +3,8 @@ from datetime import date
 
 import pytest
 
-from earlydata_weekly_publisher.pipeline import Article, generate_brief, write_brief_outputs
+from earlydata_weekly_publisher.brief import generate_brief, write_brief_outputs
+from earlydata_weekly_publisher.models import Article
 
 
 class FakeSemanticLLM:

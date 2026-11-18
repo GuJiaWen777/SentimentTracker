@@ -2,20 +2,11 @@ from datetime import date
 
 import pytest
 
-from earlydata_weekly_publisher.pipeline import (
-    Article,
-    _local_image_path,
-    build_brief,
-    ensure_article_ids,
-    generate_brief,
-    read_articles,
-    read_brief,
-    render_markdown,
-    validate_html,
-    write_articles,
-    write_brief_outputs,
-    write_rendered_outputs,
-)
+from earlydata_weekly_publisher.articles import read_articles, write_articles
+from earlydata_weekly_publisher.brief import build_brief, generate_brief, read_brief, write_brief_outputs, write_rendered_outputs
+from earlydata_weekly_publisher.models import Article, ensure_article_ids
+from earlydata_weekly_publisher.render import render_markdown, validate_html
+from earlydata_weekly_publisher.wechat import _local_image_path
 
 
 def test_build_writes_compliant_earlydata_article(tmp_path):

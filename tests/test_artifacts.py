@@ -3,7 +3,9 @@ import json
 import pytest
 
 from earlydata_weekly_publisher.artifacts import ArtifactSchemaError, check, current_version, stamp
-from earlydata_weekly_publisher.pipeline import Article, read_articles, read_brief, write_articles
+from earlydata_weekly_publisher.articles import read_articles, write_articles
+from earlydata_weekly_publisher.brief import read_brief
+from earlydata_weekly_publisher.models import Article
 
 
 def _article():

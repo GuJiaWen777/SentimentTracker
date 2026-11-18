@@ -267,7 +267,6 @@ src/earlydata_weekly_publisher/
   doctor.py              环境与配置自检
   artifacts.py           制品 schema_version 校验
   run_manifest.py        运行清单 run.json
-  pipeline.py            旧导入路径的兼容门面
 tests/                   pytest 测试
 docs/                    架构、内容规则与运行手册
 ```

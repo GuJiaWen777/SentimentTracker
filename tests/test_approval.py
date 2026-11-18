@@ -9,7 +9,8 @@ from earlydata_weekly_publisher.approval import (
     matching_publication_receipt,
     write_publication_receipt,
 )
-from earlydata_weekly_publisher.pipeline import Article, build_brief, write_brief_outputs
+from earlydata_weekly_publisher.brief import build_brief, write_brief_outputs
+from earlydata_weekly_publisher.models import Article
 from earlydata_weekly_publisher.review_app import ReviewWorkspace
 
 

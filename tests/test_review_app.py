@@ -4,7 +4,8 @@ from datetime import date
 
 import requests
 
-from earlydata_weekly_publisher.pipeline import Article, build_brief, write_brief_outputs
+from earlydata_weekly_publisher.brief import build_brief, write_brief_outputs
+from earlydata_weekly_publisher.models import Article
 from earlydata_weekly_publisher.review_app import REVIEW_HTML, ReviewWorkspace, create_review_server
 
 
