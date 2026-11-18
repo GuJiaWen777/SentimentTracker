@@ -9,6 +9,7 @@ import requests
 from ..articles import validate_window
 from ..models import Article
 from ..text import as_int, coerce_date, within_window
+from .base import SourceError, SourceInfo, SourceRequest
 
 
 REDFOX_LIST_URL = "https://redfox.hk/story/api/gzhData/queryWorkList"
@@ -84,3 +85,22 @@ def redfox_content(work_uuid: str, headers: dict[str, str]) -> str:
     ).json()
     data = response.get("data") or {}
     return str(data.get("content") or "") if isinstance(data, dict) else ""
+
+
+class RedFoxSource:
+    """Online collector backed by the RedFox WeChat article API."""
+
+    info = SourceInfo("redfox", "RedFox API", "在线采集指定公众号的文章")
+
+    def required_config(self) -> dict[str, bool]:
+        return {"REDFOX_API_KEY": bool(os.environ.get("REDFOX_API_KEY", "").strip())}
+
+    def fetch(self, request: SourceRequest) -> list[Article]:
+        if not request.accounts:
+            raise SourceError("At least one --account is required for RedFox fetch.")
+        return fetch_redfox(
+            request.start,
+            request.end,
+            list(request.accounts),
+            include_content=request.include_content,
+        )

@@ -6,6 +6,7 @@ from pathlib import Path
 from ..articles import validate_window
 from ..models import Article
 from ..text import as_int, cell_value, coerce_date, repair_title_symbols
+from .base import SourceError, SourceInfo, SourceRequest
 
 
 def ingest_pb_xlsx(path: Path, start: date, end: date) -> list[Article]:
@@ -40,3 +41,21 @@ def ingest_pb_xlsx(path: Path, start: date, end: date) -> list[Article]:
         )
     book.close()
     return articles
+
+
+class XlsxSource:
+    """Offline collector for the P&B Excel export."""
+
+    info = SourceInfo("xlsx", "P&B Excel", "导入本地 P&B 格式 Excel")
+
+    def required_config(self) -> dict[str, bool]:
+        from importlib.util import find_spec
+
+        return {"openpyxl": find_spec("openpyxl") is not None}
+
+    def fetch(self, request: SourceRequest) -> list[Article]:
+        if request.path is None:
+            raise SourceError("--xlsx is required when --source xlsx.")
+        if not request.path.is_file():
+            raise SourceError(f"Excel file not found: {request.path}")
+        return ingest_pb_xlsx(request.path, request.start, request.end)

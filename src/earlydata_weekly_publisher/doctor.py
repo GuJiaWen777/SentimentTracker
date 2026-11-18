@@ -14,6 +14,7 @@ from .artifacts import stamp as stamp_artifact
 from .config import load_dotenv
 from .ranking_cache import DEFAULT_RANKING_CACHE
 from .signal_history import default_history_db
+from .sources import SOURCES
 
 
 LLM_BACKENDS = {"api", "claude", "codex"}
@@ -78,12 +79,12 @@ def run_doctor(root: Path, *, review_port: int = 8765) -> dict[str, Any]:
                 f"{executable} found on PATH" if found else f"{executable} CLI not found on PATH",
             )
 
-    redfox = bool(os.environ.get("REDFOX_API_KEY", "").strip())
-    add(
-        "redfox",
-        "ok" if redfox else "warn",
-        "REDFOX_API_KEY is configured" if redfox else "REDFOX_API_KEY is not configured; RedFox fetch will fail",
-    )
+    for name, source in SOURCES.items():
+        missing = [label for label, present in source.required_config().items() if not present]
+        if missing:
+            add(f"source:{name}", "warn", f"{source.info.label}: missing " + ", ".join(missing))
+        else:
+            add(f"source:{name}", "ok", f"{source.info.label} is ready")
 
     app_id = os.environ.get("WECHAT_APP_ID", "").strip()
     secret = os.environ.get("WECHAT_APP_SECRET", "").strip()

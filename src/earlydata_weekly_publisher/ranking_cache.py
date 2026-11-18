@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .locking import FileLock
 from .prompts import RANKING_PROMPT_VERSION
 
 
@@ -68,22 +69,28 @@ class RankingCache:
         }
 
     def save(self) -> None:
-        ordered = sorted(
-            self.entries.items(),
-            key=lambda item: str(item[1].get("updated_at") or ""),
-            reverse=True,
-        )[:MAX_ENTRIES]
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(
-                {"version": CACHE_VERSION, "entries": dict(ordered)},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        with FileLock(self.path.with_name(self.path.name + ".lock"), description="ranking cache save"):
+            # Merge with entries another run may have written since open(), so
+            # concurrent builds add to the cache instead of overwriting it.
+            disk = RankingCache.open(self.path, model=self.model, prompt_version=self.prompt_version)
+            merged = {**disk.entries, **self.entries}
+            ordered = sorted(
+                merged.items(),
+                key=lambda item: str(item[1].get("updated_at") or ""),
+                reverse=True,
+            )[:MAX_ENTRIES]
+            temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {"version": CACHE_VERSION, "entries": dict(ordered)},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        self.entries = dict(ordered)
 
     def _key(self, article: Any) -> str:
         payload = {

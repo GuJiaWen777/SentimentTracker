@@ -30,7 +30,7 @@ flowchart LR
 
 - `models.py`：`Article` 数据模型与稳定 `article_id` 分配。
 - `articles.py`：日期窗口校验、窗口过滤和 `articles.json` 读写。
-- `sources/redfox.py`、`sources/pb_xlsx.py`：RedFox API 与 P&B Excel 两个采集适配器。
+- `sources/`：`SourceAdapter` 接口与注册表；`redfox.py`、`pb_xlsx.py` 实现两个采集适配器，CLI 的 `--source` 选项和 `doctor` 的数据源检查都由注册表驱动。
 - `heuristics.py`：规则模式的相关性评分、信号分类、重点实体与技术标签提取。
 - `brief.py`：brief 组装、LLM/规则模式分发、`brief.json` 与渲染产物写入。
 - `render.py`：Markdown、公众号兼容 HTML 渲染与合规校验。
@@ -40,11 +40,12 @@ flowchart LR
 - `wechat.py`：微信草稿创建与更新、access token 缓存刷新、图片去重上传和网络重试。
 - `llm_client.py`：OpenAI-compatible API、Claude CLI、Codex CLI 三种结构化 LLM 传输，并累计 token/费用用量。
 - `semantic_generation.py`：全部新闻分批语义排名、候选去重、最终 6 条选择、最多 6 条备选和所有板块的语义生成。
-- `ranking_cache.py`：按文章内容、模型和提示词版本索引的排名缓存，支持增量生成。
+- `ranking_cache.py`：按文章内容、模型和提示词版本索引的排名缓存，支持增量生成；保存时与磁盘现有条目合并，并发运行不会互相覆盖。
+- `locking.py`：报告目录 `build`/`run` 互斥锁与缓存写入锁；锁文件记录 pid、host 和创建时间，陈旧锁自动回收。
 - `signal_history.py`：SQLite 信号历史库，记录已批准报告的信号、分类和重点标签，并计算连续出现与跨周趋势。
 - `artifacts.py`：持久化 JSON 的 `schema_version` 写入与兼容性校验；旧文件按 v0 读取，新版本文件明确拒绝。
 - `run_manifest.py`：把本次运行的后端、模型、提示词版本、用量、缓存、耗时和产物哈希写入 `run.json`。
-- `doctor.py`：检查 Python、`.env`、LLM 后端、数据目录、缓存/历史库和审核端口，不输出密钥。
+- `doctor.py`：检查 Python、`.env`、LLM 后端、各数据源可用性、数据目录、缓存/历史库和审核端口，不输出密钥。
 - `prompts.py`：CEO 受众的排名标尺、事实约束、历史趋势上下文和整期分析提示词。
 - `cli.py`：参数、日期窗口、LLM 后端选择、缓存与历史配置、运行清单和发布门禁。
 

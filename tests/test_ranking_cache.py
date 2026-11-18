@@ -140,3 +140,38 @@ def test_ranking_cache_only_ranks_changed_articles(tmp_path):
     assert brief["generation"]["cache_misses"] == 1
     entries = json.loads(cache_path.read_text(encoding="utf-8"))["entries"]
     assert len(entries) == 4
+
+
+def _cache_article(title: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        title=title,
+        source="来源",
+        published_at="2026-05-30",
+        summary="",
+        content="",
+        tags=None,
+        read_count=0,
+        like_count=0,
+        share_count=0,
+        recommend_count=0,
+    )
+
+
+def test_ranking_cache_merges_entries_saved_by_another_process(tmp_path):
+    from earlydata_weekly_publisher.ranking_cache import RankingCache
+
+    path = tmp_path / "ranking.json"
+    first = RankingCache.open(path, model="test-model")
+    second = RankingCache.open(path, model="test-model")
+    article_a = _cache_article("文章 A")
+    article_b = _cache_article("文章 B")
+
+    first.put(article_a, score=80, category="监管", reason="影响注册策略")
+    first.save()
+    second.put(article_b, score=70, category="技术", reason="影响管线评估")
+    second.save()
+
+    merged = RankingCache.open(path, model="test-model")
+    assert {first._key(article_a), second._key(article_b)} <= set(merged.entries)

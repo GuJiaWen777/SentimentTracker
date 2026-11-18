@@ -130,6 +130,7 @@ earlydata-weekly publish --report-dir data\reports\20260525_20260531 --update-dr
 | 现象 | 处理 |
 | --- | --- |
 | 环境或凭据不确定 | 运行 `earlydata-weekly doctor --format text`，按 `error` 项处理。 |
+| `another build is already running` | 同一报告目录已有进程在运行；等待其结束。若确认已崩溃，删除该目录下的 `.earlydata.lock` 后重试。 |
 | `schema_version` 过新 | 该文件由更新版本写出；升级本工具后再读取，不要手工改版本号。 |
 | `REDFOX_API_KEY is missing` | 在项目根目录 `.env` 配置密钥，重新运行。 |
 | `LLM_API_KEY/LLM_API_MODEL is required` | 配置 OpenAI-compatible API，或显式改用 `--llm-backend claude/codex`。 |

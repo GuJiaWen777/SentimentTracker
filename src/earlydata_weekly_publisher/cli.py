@@ -4,7 +4,9 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
+from typing import Callable
 
 from .articles import (
     filter_articles_by_window,
@@ -16,9 +18,10 @@ from .articles import (
 )
 from .brief import generate_brief, read_brief, write_brief_outputs, write_rendered_outputs
 from .config import load_dotenv
+from .locking import LockError, report_lock
 from .models import ensure_article_ids
 from .render import DEFAULT_COVER
-from .sources import fetch_redfox, ingest_pb_xlsx
+from .sources import SourceRequest, get_source, source_names
 from .wechat import publish_draft
 from .ranking_cache import DEFAULT_RANKING_CACHE
 from .run_manifest import RunManifest
@@ -51,7 +54,7 @@ def main() -> int:
 
     run = commands.add_parser("run", help="Acquire then build locally; never publishes.")
     _window_args(run)
-    run.add_argument("--source", choices=("redfox", "xlsx"), required=True)
+    run.add_argument("--source", choices=source_names(), required=True)
     run.add_argument("--account", action="append", default=[])
     run.add_argument("--xlsx", help="Required for --source xlsx.")
     run.add_argument("--no-content", action="store_true")
@@ -110,12 +113,25 @@ def main() -> int:
     args = parser.parse_args()
     load_dotenv(Path(args.env_root))
     if args.command == "fetch":
-        articles = fetch_redfox(parse_day(args.start), parse_day(args.end), args.account, include_content=not args.no_content)
+        articles = get_source("redfox").fetch(
+            SourceRequest(
+                start=parse_day(args.start),
+                end=parse_day(args.end),
+                accounts=tuple(args.account),
+                include_content=not args.no_content,
+            )
+        )
         write_articles(Path(args.output), articles)
         print(f"Fetched {len(articles)} articles -> {args.output}")
         return 0
     if args.command == "ingest-xlsx":
-        articles = ingest_pb_xlsx(Path(args.xlsx), parse_day(args.start), parse_day(args.end))
+        articles = get_source("xlsx").fetch(
+            SourceRequest(
+                start=parse_day(args.start),
+                end=parse_day(args.end),
+                path=Path(args.xlsx),
+            )
+        )
         write_articles(Path(args.output), articles)
         print(f"Ingested {len(articles)} articles -> {args.output}")
         return 0
@@ -255,10 +271,27 @@ def _history_path(args: argparse.Namespace) -> Path | None:
     return Path(args.history_db) if args.history_db else default_history_db()
 
 
+def _with_report_lock(output_dir: Path, description: str, action: Callable[[], int]) -> int:
+    lock = report_lock(output_dir, description=description)
+    try:
+        lock.acquire()
+    except LockError as exc:
+        print(f"[lock] {exc}", file=sys.stderr)
+        return 2
+    try:
+        return action()
+    finally:
+        lock.release()
+
+
 def _build(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
     validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
+    return _with_report_lock(output_dir, "build", lambda: _build_locked(args, start, end, output_dir))
+
+
+def _build_locked(args: argparse.Namespace, start: date, end: date, output_dir: Path) -> int:
     cache_path, history_path = _cache_path(args), _history_path(args)
     with RunManifest(output_dir, command="build", start=start, end=end) as manifest:
         manifest.set("input", str(Path(args.input)))
@@ -293,17 +326,25 @@ def _run(args: argparse.Namespace) -> int:
     start, end = parse_day(args.start), parse_day(args.end)
     validate_window(start, end)
     output_dir = Path(args.output_dir or Path("data/reports") / window_slug(start, end))
+    return _with_report_lock(output_dir, "run", lambda: _run_locked(args, start, end, output_dir))
+
+
+def _run_locked(args: argparse.Namespace, start: date, end: date, output_dir: Path) -> int:
     raw_path = output_dir / "articles.json"
     cache_path, history_path = _cache_path(args), _history_path(args)
     with RunManifest(output_dir, command="run", start=start, end=end) as manifest:
         manifest.set("cache", {"enabled": cache_path is not None and args.generator == "llm", "path": str(cache_path) if cache_path else ""})
         manifest.set("history", {"enabled": history_path is not None, "path": str(history_path) if history_path else ""})
-        if args.source == "redfox":
-            articles = fetch_redfox(start, end, args.account, include_content=not args.no_content)
-        else:
-            if not args.xlsx:
-                raise ValueError("--xlsx is required when --source xlsx.")
-            articles = ingest_pb_xlsx(Path(args.xlsx), start, end)
+        source = get_source(args.source)
+        articles = source.fetch(
+            SourceRequest(
+                start=start,
+                end=end,
+                accounts=tuple(args.account),
+                path=Path(args.xlsx) if args.xlsx else None,
+                include_content=not args.no_content,
+            )
+        )
         acquired = len(ensure_article_ids(articles))
         articles, excluded = filter_articles_by_window(articles, start, end)
         if not articles:
@@ -313,7 +354,8 @@ def _run(args: argparse.Namespace) -> int:
         manifest.set(
             "acquisition",
             {
-                "source": args.source,
+                "source": source.info.name,
+                "source_label": source.info.label,
                 "account_count": len(args.account),
                 "acquired_count": acquired,
                 "excluded_outside_window": excluded,

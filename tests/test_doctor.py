@@ -47,6 +47,7 @@ def test_doctor_reports_missing_llm_model_without_leaking_secrets(tmp_path, monk
     llm = _checks(report)["llm_api"]
     assert llm["status"] == "error"
     assert "LLM_API_MODEL" in llm["detail"]
+    assert _checks(report)["source:redfox"]["status"] == "warn"
 
 
 def test_doctor_passes_with_a_complete_local_configuration(tmp_path, monkeypatch):
@@ -64,6 +65,8 @@ def test_doctor_passes_with_a_complete_local_configuration(tmp_path, monkeypatch
     assert report["summary"]["error"] == 0
     assert _checks(report)["llm_api"]["status"] == "ok"
     assert _checks(report)["wechat"]["status"] == "ok"
+    assert _checks(report)["source:redfox"]["status"] == "ok"
+    assert _checks(report)["source:xlsx"]["status"] == "ok"
     assert SECRET not in json.dumps(report, ensure_ascii=False)
 
 
